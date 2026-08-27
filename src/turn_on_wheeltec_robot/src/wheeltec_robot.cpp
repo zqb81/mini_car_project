@@ -49,6 +49,7 @@ namespace turn_on_wheeltec_robot
 WheeltecRobotNode::WheeltecRobotNode()
 : Node("wheeltec_robot")
 {
+  // 速度上限既保护协议 int16 编码，也限制异常规划或错误遥控造成的底盘突变。
   serial_port_ = declare_parameter<std::string>("serial_port", "/dev/wheeltec_controller");
   baud_rate_ = declare_parameter<int>("baud_rate", 115200);
   odom_frame_ = declare_parameter<std::string>("odom_frame", "odom");
@@ -143,6 +144,7 @@ void WheeltecRobotNode::readSerial()
     break;
   }
 
+  // 长时间无法同步到有效帧通常意味着串口协议或波特率不匹配，保留尾部以等待下一帧头。
   if (receive_buffer_.size() > 4096) {
     RCLCPP_WARN(get_logger(), "串口接收缓存异常增长，丢弃旧数据并重新同步帧头。");
     receive_buffer_.erase(receive_buffer_.begin(), receive_buffer_.end() - 1024);
@@ -182,6 +184,7 @@ void WheeltecRobotNode::processReceiveBuffer()
       return;
     }
 
+    // 校验失败只丢弃当前帧头而不是整段缓存，避免有效帧恰好紧跟在损坏数据后被一并丢弃。
     if (receive_buffer_[kStatusFrameSize - 1] != kFrameTail ||
       checksum(receive_buffer_.data(), 22) != receive_buffer_[22])
     {
@@ -205,12 +208,14 @@ void WheeltecRobotNode::handleStatusFrame(
   const double velocity_z = decodeInt16(frame[6], frame[7]) / 1000.0;
   const auto stamp = now();
 
+  // 速度积分仅接受合理的采样间隔；首次收帧、时钟回拨或串口断连后的长间隔均不应产生位姿跳变。
   double delta_time = (stamp - last_odom_time_).seconds();
   last_odom_time_ = stamp;
   if (delta_time < 0.0 || delta_time > 0.5) {
     delta_time = 0.0;
   }
 
+  // STM32 回传的是机体坐标系速度，需按当前航向旋转到 odom 坐标系后再进行平面积分。
   position_x_ +=
     (velocity_x * std::cos(heading_) - velocity_y * std::sin(heading_)) * delta_time;
   position_y_ +=
@@ -364,6 +369,7 @@ bool WheeltecRobotNode::writeAll(const uint8_t * data, std::size_t size)
       continue;
     }
 
+    // 文件描述符使用非阻塞模式；缓冲区暂满时短暂等待可写事件，避免截断协议帧。
     if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
       pollfd descriptor{serial_fd_, POLLOUT, 0};
       if (::poll(&descriptor, 1, 20) > 0) {

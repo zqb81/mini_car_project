@@ -13,6 +13,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
+    # 本入口将增量 SLAM 与 Nav2 同时启动：RTAB-Map 维护在线地图，Nav2 订阅 /map 并输出 /cmd_vel。
     package_share = get_package_share_directory("turn_on_wheeltec_robot")
     nav2_share = get_package_share_directory("nav2_bringup")
     base_launch = PythonLaunchDescriptionSource(
@@ -74,6 +75,7 @@ def generate_launch_description():
                 namespace="rtabmap",
                 name="rgbd_sync",
                 output="screen",
+                # RGB 与深度时间戳存在小偏差时使用近似同步；同步失败将不会生成供 SLAM 消费的 rgbd_image。
                 parameters=[
                     {
                         "approx_sync": True,
@@ -97,7 +99,7 @@ def generate_launch_description():
                 namespace="rtabmap",
                 name="rtabmap",
                 output="screen",
-                # 在线 SLAM 不使用 -d，否则每次启动都会删除数据库。
+                # 在线 SLAM 不使用 -d，否则每次启动都会删除数据库；增量记忆使新观测持续写入该库。
                 parameters=[
                     {
                         "database_path": LaunchConfiguration("database_path"),
@@ -109,6 +111,7 @@ def generate_launch_description():
                         "qos_scan": 2,
                         "qos_odom": 1,
                         "queue_size": 20,
+                        # 小车在平面行驶，限制为 3DoF 可降低姿态漂移并与 2D Nav2 代价地图保持一致。
                         "Reg/Force3DoF": "true",
                         "Reg/Strategy": "1",
                         "Grid/FromDepth": "false",
@@ -131,6 +134,7 @@ def generate_launch_description():
                 ],
             ),
             IncludeLaunchDescription(
+                # Nav2 只负责规划和控制，不启动 map_server 或 AMCL，定位与地图唯一来源为 RTAB-Map。
                 nav2_launch,
                 launch_arguments={
                     "use_sim_time": use_sim_time,

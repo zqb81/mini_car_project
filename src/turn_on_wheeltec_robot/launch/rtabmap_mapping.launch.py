@@ -13,6 +13,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
+    # 纯建图入口：生成地图数据库但不启动 Nav2，适合首次采集环境或重建已有地图。
     package_share = get_package_share_directory("turn_on_wheeltec_robot")
     base_launch = PythonLaunchDescriptionSource(
         os.path.join(package_share, "launch", "base.launch.py")
@@ -92,6 +93,7 @@ def generate_launch_description():
                 namespace="rtabmap",
                 name="rtabmap",
                 output="screen",
+                # -d 会删除同路径旧数据库，防止新建地图混入旧环境节点；需要保留旧图时改用新的数据库路径。
                 arguments=["-d"],
                 parameters=[
                     {
@@ -103,6 +105,7 @@ def generate_launch_description():
                         "qos_scan": 2,
                         "qos_odom": 1,
                         "queue_size": 20,
+                        # 平面底盘仅估计 x、y 与偏航角，以匹配后续 2D 激光导航的坐标约束。
                         "Reg/Force3DoF": "true",
                         "Reg/Strategy": "1",
                         "Grid/FromDepth": "false",

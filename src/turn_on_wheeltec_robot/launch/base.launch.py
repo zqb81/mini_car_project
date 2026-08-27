@@ -21,6 +21,7 @@ SUPPORTED_MODELS = {
 
 
 def launch_setup(context):
+    # 在生成节点前解析并校验车型，避免因 URDF 缺失导致节点启动后才出现难以定位的 TF 故障。
     package_share = Path(get_package_share_directory("turn_on_wheeltec_robot"))
     model = LaunchConfiguration("model").perform(context)
     if model not in SUPPORTED_MODELS:
@@ -35,6 +36,7 @@ def launch_setup(context):
     robot_description = urdf_path.read_text(encoding="utf-8")
     bridge_config = str(package_share / "config" / "wheeltec_bridge.yaml")
 
+    # 底盘节点负责 odom 到 base_footprint，robot_state_publisher 负责 URDF 中的关节 TF；两者职责不可重叠。
     return [
         Node(
             package="turn_on_wheeltec_robot",
@@ -63,6 +65,7 @@ def launch_setup(context):
                 },
             ],
         ),
+        # IMU 安装位姿当前为默认值，实车安装位置或朝向变化时必须同步标定此静态变换。
         Node(
             package="robot_state_publisher",
             executable="robot_state_publisher",

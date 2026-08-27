@@ -13,6 +13,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
+    # 定位导航入口：加载已有 RTAB-Map 数据库并关闭增量记忆，避免导航过程中修改基准地图。
     package_share = get_package_share_directory("turn_on_wheeltec_robot")
     nav2_share = get_package_share_directory("nav2_bringup")
 
@@ -73,6 +74,7 @@ def generate_launch_description():
                 namespace="rtabmap",
                 name="rgbd_sync",
                 output="screen",
+                # 近似同步仅解决传感器时间戳的小偏差；相机坐标系和深度图仍必须几何对齐。
                 parameters=[
                     {
                         "approx_sync": True,
@@ -111,6 +113,7 @@ def generate_launch_description():
                         "Reg/Force3DoF": "true",
                         "Reg/Strategy": "1",
                         "Grid/FromDepth": "false",
+                        # 定位模式读取已有节点作为工作记忆，不再向数据库新增环境节点。
                         "Mem/IncrementalMemory": "false",
                         "Mem/InitWMWithAllNodes": "true",
                         "use_sim_time": ParameterValue(
@@ -126,6 +129,7 @@ def generate_launch_description():
                 ],
             ),
             IncludeLaunchDescription(
+                # 地图与 map 到 odom 变换由 RTAB-Map 提供，Nav2 只消费这些结果完成规划和控制。
                 nav2_launch,
                 launch_arguments={
                     "use_sim_time": LaunchConfiguration("use_sim_time"),
