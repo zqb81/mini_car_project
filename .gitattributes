@@ -1,0 +1,11 @@
+# 在树莓派与 Windows 间保持源文件使用 LF 行尾，减少无意义的版本差异。
+*.c text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.py text eol=lf
+*.xml text eol=lf
+*.launch text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf

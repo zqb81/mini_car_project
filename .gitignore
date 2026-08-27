@@ -1,0 +1,27 @@
+# ROS catkin 构建产物
+build/
+devel/
+install/
+log/
+logs/
+.catkin_tools/
+
+# Python 缓存与编辑器临时文件
+__pycache__/
+*.py[cod]
+*.swp
+*.swo
+.vscode/
+
+# Keil MDK 构建产物与本机界面配置
+OBJ/
+Listings/
+*.axf
+*.hex
+*.bin
+*.map
+*.d
+*.o
+*.crf
+*.uvguix.*
+*.uvoptx
