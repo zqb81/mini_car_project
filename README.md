@@ -299,7 +299,46 @@ ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist \
 
 停止发布后，桥接节点会在默认 0.5 秒内发送零速度。
 
-## 11. RTAB-Map 建图
+## 11. 实时 SLAM 建图与导航
+
+实时建图和实时导航可以同时运行，但它们不是同一个节点：
+
+~~~text
+相机 + 雷达 + 编码器里程计 + IMU
+                 |
+                 v
+RTAB-Map 增量 SLAM ---- 发布 /map 与 map -> odom
+                 |
+                 v
+Nav2 全局/局部规划 ---- 发布 /cmd_vel
+                 |
+                 v
+ROS2 底盘桥接 -------- 发送到 STM32 USART3
+~~~
+
+本工程新增 [slam_navigation.launch.py](src/turn_on_wheeltec_robot/launch/slam_navigation.launch.py)，它使用 RTAB-Map 增量记忆模式边建图边运行 Nav2。已有的 rtabmap_navigation.launch.py 使用定位模式，只用于加载已保存数据库后的导航。
+
+启动实时 SLAM 导航：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
+  model:=mini_mec \
+  serial_port:=/dev/wheeltec_controller \
+  database_path:=$HOME/.ros/mini_car_slam.db
+~~~
+
+必须先启动相机和雷达驱动，再启动该入口。实时 SLAM 的最小数据闭环是：
+
+- /camera/rgb/image_raw
+- /camera/depth/image
+- /camera/rgb/camera_info
+- /scan
+- /odom
+- map -> odom -> base_footprint -> camera_link
+
+实时导航时不要启动 map_server 加载旧地图，也不要启动 AMCL 作为第二个定位源；地图由 RTAB-Map 在线发布，Nav2 的全局代价地图订阅 /map。
+
+## 12. RTAB-Map 建图
 
 先分别启动 RGB-D 相机和雷达驱动：
 
@@ -326,7 +365,7 @@ cp ~/.ros/mini_car_rtabmap.db \
 
 树莓派建议使用较低 RGB-D 分辨率和帧率，保持低速移动，关闭不必要的可视化，并做好散热。
 
-## 12. RTAB-Map + Nav2 导航
+## 13. RTAB-Map 数据库定位导航
 
 导航前必须已有数据库：
 
@@ -352,7 +391,7 @@ ros2 launch turn_on_wheeltec_robot rtabmap_navigation.launch.py \
 
 Nav2 参数位于 src/turn_on_wheeltec_robot/config/nav2_params.yaml。默认参数按 Mini 麦克纳姆底盘配置，其他车型需要调整速度空间、机器人尺寸和转弯约束。
 
-## 13. KCF 视觉跟随
+## 14. KCF 视觉跟随
 
 先启动 RGB-D 相机：
 
@@ -376,7 +415,35 @@ ros2 run kcf_track kcf_node --ros-args \
 
 KCF 与 Nav2 都会发布 /cmd_vel，不能直接同时控制底盘。并行运行时应增加 twist_mux 并制定优先级。
 
-## 14. 常见问题
+## 15. 救援场景传感器建议
+
+### 15.1 基础闭环
+
+| 传感器 | 作用 | 当前工程状态 |
+| --- | --- | --- |
+| 霍尔编码器 | 短时轮速与里程计 | STM32 已有 |
+| 6 轴 IMU | 角速度、加速度和短时姿态约束 | STM32 已有，当前回传原始量 |
+| 2D 激光雷达 | 平面避障和激光 SLAM | ROS 话题 /scan，需安装硬件驱动 |
+| RGB-D 相机 | 视觉回环、深度障碍和目标跟踪 | 当前 launch 已预留 Astra 话题 |
+
+### 15.2 厂房救援推荐
+
+普通 RGB-D 相机不应作为救援环境唯一的定位或避障传感器。烟尘、黑暗、强逆光、反光金属、热源和水雾都会使深度图或视觉特征退化。建议按预算增加：
+
+- 3D 激光雷达：优先级最高，提供对烟尘和弱光更稳定的几何信息；RTAB-Map 可接入 3D 点云或 2D 投影。
+- 热成像相机：搜索人员和高温区域，发布独立检测结果，不直接替代导航定位。
+- 气体传感器：CO、CO2、VOC、氧气和可燃气体，用于风险评估与返航策略。
+- UWB 定位基站或无线测距：厂房遮挡、重复纹理或烟尘导致 SLAM 退化时提供全局约束。
+- 独立急停、碰撞条和安全遥控链路：不依赖 ROS2 进程，硬件层切断电机使能。
+- 电池、电流和温度监测：支持低电量返航、过流保护和热失控预警。
+
+如果只能增加一种定位相关传感器，优先选择带 IMU 的 3D 激光雷达；如果任务重点是找人，增加热成像相机和气体传感器，但仍保留激光雷达作为避障主传感器。
+
+### 15.3 救援系统安全边界
+
+该系统适合人在回路的实验和辅助侦察，不应直接视为消防或生命安全认证设备。必须提供人工接管、急停、失联停车、低电量停车、传感器失效降级和通信日志；正式部署前应在烟雾、弱光、反光、狭窄通道和动态障碍物条件下做分级测试。
+
+## 16. 常见问题
 
 ### 14.1 串口打不开
 
@@ -427,7 +494,7 @@ colcon build --symlink-install --event-handlers console_direct+
 
 本仓库不包含相机与雷达驱动，相关包需按硬件型号安装。
 
-## 15. Git 工作流
+## 17. Git 工作流
 
 ~~~bash
 git switch main
@@ -451,15 +518,16 @@ git tag -a v2.0.0-ros2 -m "ROS2 Humble 与 RTAB-Map/Nav2 迁移版"
 git push origin v2.0.0-ros2
 ~~~
 
-## 16. 当前限制
+## 18. 当前限制
 
 - 当前 Windows 工作机没有 ROS2 Humble，已完成静态语法与结构验证，最终 colcon build 必须在 Ubuntu 22.04 / Humble 上执行。
 - 相机、雷达驱动未纳入仓库。
 - Nav2 参数主要针对 Mini 麦克纳姆底盘，其他车型需要实车调参。
 - ROS1 多点导航脚本没有迁移，不参与 ROS2 安装。
 - STM32 侧仍建议增加独立通信看门狗。
+- 实时 SLAM 需要相机、雷达和各自 ROS2 驱动；本仓库只提供桥接和算法启动配置。
 
-## 17. 参考资料
+## 19. 参考资料
 
 - [RTAB-Map](https://github.com/introlab/rtabmap)
 - [rtabmap_ros](https://github.com/introlab/rtabmap_ros)
