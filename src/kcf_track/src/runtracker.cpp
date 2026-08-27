@@ -1,290 +1,239 @@
-#include <iostream>
-#include <fstream>
-#include <sstream>
 #include <algorithm>
-#include <dirent.h>
-#include </usr/include/opencv2/highgui/highgui_c.h>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <numeric>
+#include <string>
+#include <vector>
 
-#include <ros/ros.h>
-#include <image_transport/image_transport.h>
-#include <cv_bridge/cv_bridge.h>
-#include <sensor_msgs/image_encodings.h>
-#include "geometry_msgs/Twist.h"
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
 
-#include <opencv2/core/core.hpp>
-#include <opencv2/highgui/highgui.hpp>
-
+#include "cv_bridge/cv_bridge.h"
+#include "geometry_msgs/msg/twist.hpp"
 #include "kcftracker.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/image_encodings.hpp"
+#include "sensor_msgs/msg/image.hpp"
 
-static const std::string RGB_WINDOW = "RGB Image window";
-//static const std::string DEPTH_WINDOW = "DEPTH Image window";
-
-#define Max_linear_speed 0.6
-#define Min_linear_speed 0.2
-#define Min_distance 0.7
-#define Max_distance 1.0
-#define Max_rotation_speed 0.75
-
-float linear_speed = 0;
-float rotation_speed = 0;
-
-float line_distance = 0;
-float angle_distance = 0;
-float angle_distance2 = 0;
-
-float k_linear_speed = (Max_linear_speed - Min_linear_speed) / (Max_distance - Min_distance);
-float h_linear_speed = Min_linear_speed - k_linear_speed * Min_distance;
-
-float k_rotation_speed = 0.004;
-float h_rotation_speed_left = 1.2;
-float h_rotation_speed_right = 1.36;
- 
-int ERROR_OFFSET_X_left1 = 100;
-int ERROR_OFFSET_X_left2 = 300;
-int ERROR_OFFSET_X_right1 = 340;
-int ERROR_OFFSET_X_right2 = 540;
-
-cv::Mat rgbimage;
-cv::Mat depthimage;
-cv::Rect selectRect;
-cv::Point origin;
-cv::Rect result;
-
-bool select_flag = false;
-bool bRenewROI = false;  // the flag to enable the implementation of KCF algorithm for the new chosen ROI
-bool bBeginKCF = false;
-bool enable_get_depth = false;
-
-bool HOG = true;
-bool FIXEDWINDOW = false;
-bool MULTISCALE = true;
-bool SILENT = true;
-bool LAB = false;
-
-// Create KCFTracker object
-KCFTracker tracker(HOG, FIXEDWINDOW, MULTISCALE, LAB);
-
-float dist_val[5] ;
-
-void onMouse(int event, int x, int y, int, void*)
+namespace
 {
-    if (select_flag)
-    {
-        selectRect.x = MIN(origin.x, x);        
-        selectRect.y = MIN(origin.y, y);
-        selectRect.width = abs(x - origin.x);   
-        selectRect.height = abs(y - origin.y);
-        selectRect &= cv::Rect(0, 0, rgbimage.cols, rgbimage.rows);
-    }
-    if (event == CV_EVENT_LBUTTONDOWN)
-    {
-        bBeginKCF = false;  
-        select_flag = true; 
-        origin = cv::Point(x, y);       
-        selectRect = cv::Rect(x, y, 0, 0);  
-    }
-    else if (event == CV_EVENT_LBUTTONUP)
-    {
-        select_flag = false;
-        bRenewROI = true;
-    }
-}
 
-class ImageConverter
+constexpr char kRgbWindow[] = "KCF RGB";
+
+}  // namespace
+
+class KcfTrackerNode final : public rclcpp::Node
 {
-  ros::NodeHandle nh_;
-  image_transport::ImageTransport it_;
-  image_transport::Subscriber image_sub_;
-  image_transport::Subscriber depth_sub_;
-  std::string rgb_topic;
-  std::string depth_topic;
-  
-
-  
 public:
-  ros::Publisher pub;
-
-  ImageConverter()
-    : it_(nh_)
+  KcfTrackerNode()
+  : Node("kcf_tracker"), tracker_(true, false, true, false)
   {
+    rgb_topic_ = declare_parameter<std::string>(
+      "rgb_topic", "/camera/rgb/image_raw");
+    depth_topic_ = declare_parameter<std::string>(
+      "depth_topic", "/camera/depth/image");
+    show_window_ = declare_parameter<bool>("show_window", true);
 
-  nh_.param<std::string>("/kcf_tracker/rgb_topic", rgb_topic,"/camera/rgb/image_raw");
-  nh_.param<std::string>("/kcf_tracker/depth_topic", depth_topic,"/camera/depth/image");
-    // Subscrive to input video feed and publish output video feed
-    /*image_sub_ = it_.subscribe("/camera/rgb/image_raw", 1, 
-      &ImageConverter::imageCb, this);
-    depth_sub_ = it_.subscribe("/camera/depth/image", 1, 
-      &ImageConverter::depthCb, this);*/
-    image_sub_ = it_.subscribe(rgb_topic, 1, 
-      &ImageConverter::imageCb, this);
-    depth_sub_ = it_.subscribe(depth_topic, 1, 
-      &ImageConverter::depthCb, this);
-    pub = nh_.advertise<geometry_msgs::Twist>("kcf/track", 1000);
-    //pub = nh_.advertise<geometry_msgs::Twist>("position/distance", 1000);
-   
-
-    cv::namedWindow(RGB_WINDOW);
-    //cv::namedWindow(DEPTH_WINDOW); 
-  }
-
-  ~ImageConverter()
-  {
-    cv::destroyWindow(RGB_WINDOW);
-    //cv::destroyWindow(DEPTH_WINDOW);
-  }
-
-  void imageCb(const sensor_msgs::ImageConstPtr& msg)
-  {
-    cv_bridge::CvImagePtr cv_ptr;
-    try
-    {
-      cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+    const int roi_x = declare_parameter<int>("initial_roi.x", 0);
+    const int roi_y = declare_parameter<int>("initial_roi.y", 0);
+    const int roi_width = declare_parameter<int>("initial_roi.width", 0);
+    const int roi_height = declare_parameter<int>("initial_roi.height", 0);
+    if (roi_width > 0 && roi_height > 0) {
+      selected_roi_ = cv::Rect(roi_x, roi_y, roi_width, roi_height);
+      renew_roi_ = true;
     }
-    catch (cv_bridge::Exception& e)
-    {
-      ROS_ERROR("cv_bridge exception: %s", e.what());
+
+    tracking_publisher_ = create_publisher<geometry_msgs::msg::Twist>("kcf/track", 10);
+    rgb_subscription_ = create_subscription<sensor_msgs::msg::Image>(
+      rgb_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&KcfTrackerNode::onRgbImage, this, std::placeholders::_1));
+    depth_subscription_ = create_subscription<sensor_msgs::msg::Image>(
+      depth_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&KcfTrackerNode::onDepthImage, this, std::placeholders::_1));
+
+    if (show_window_) {
+      cv::namedWindow(kRgbWindow);
+      cv::setMouseCallback(kRgbWindow, &KcfTrackerNode::mouseCallback, this);
+    }
+  }
+
+  ~KcfTrackerNode() override
+  {
+    if (show_window_) {
+      cv::destroyWindow(kRgbWindow);
+    }
+  }
+
+private:
+  static void mouseCallback(int event, int x, int y, int, void * context)
+  {
+    static_cast<KcfTrackerNode *>(context)->handleMouse(event, x, y);
+  }
+
+  void handleMouse(int event, int x, int y)
+  {
+    if (selecting_) {
+      selected_roi_.x = std::min(selection_origin_.x, x);
+      selected_roi_.y = std::min(selection_origin_.y, y);
+      selected_roi_.width = std::abs(x - selection_origin_.x);
+      selected_roi_.height = std::abs(y - selection_origin_.y);
+      if (!rgb_image_.empty()) {
+        selected_roi_ &= cv::Rect(0, 0, rgb_image_.cols, rgb_image_.rows);
+      }
+    }
+
+    if (event == cv::EVENT_LBUTTONDOWN) {
+      tracking_active_ = false;
+      selecting_ = true;
+      selection_origin_ = cv::Point(x, y);
+      selected_roi_ = cv::Rect(x, y, 0, 0);
+    } else if (event == cv::EVENT_LBUTTONUP) {
+      selecting_ = false;
+      renew_roi_ = selected_roi_.width > 4 && selected_roi_.height > 4;
+    }
+  }
+
+  void onRgbImage(const sensor_msgs::msg::Image::ConstSharedPtr message)
+  {
+    try {
+      rgb_image_ = cv_bridge::toCvCopy(
+        message, sensor_msgs::image_encodings::BGR8)->image;
+    } catch (const cv_bridge::Exception & error) {
+      RCLCPP_ERROR(get_logger(), "RGB 图像转换失败：%s", error.what());
       return;
     }
 
-    cv_ptr->image.copyTo(rgbimage);
-
-    cv::setMouseCallback(RGB_WINDOW, onMouse, 0);
-
-    if(bRenewROI)
-    {
-        // if (selectRect.width <= 0 || selectRect.height <= 0)
-        // {
-        //     bRenewROI = false;
-        //     //continue;
-        // }
-        tracker.init(selectRect, rgbimage);
-        bBeginKCF = true;
-        bRenewROI = false;
-        enable_get_depth = false;
-    }
-
-    if(bBeginKCF)
-    {
-        result = tracker.update(rgbimage);
-        cv::rectangle(rgbimage, result, cv::Scalar( 0, 255, 255 ), 1, 8 );
-        enable_get_depth = true;
-    }
-    else
-        cv::rectangle(rgbimage, selectRect, cv::Scalar(255, 0, 0), 2, 8, 0);
-
-    cv::imshow(RGB_WINDOW, rgbimage);
-    cv::waitKey(1);
-  }
-
-  void depthCb(const sensor_msgs::ImageConstPtr& msg)
-  {
-  	cv_bridge::CvImagePtr cv_ptr;
-  	try
-  	{
-  		cv_ptr = cv_bridge::toCvCopy(msg,sensor_msgs::image_encodings::TYPE_32FC1);
-  		cv_ptr->image.copyTo(depthimage);
-  	}
-  	catch (cv_bridge::Exception& e)
-  	{
-  		ROS_ERROR("Could not convert from '%s' to 'TYPE_32FC1'.", msg->encoding.c_str());
-  	}
-
-    if(enable_get_depth)
-    {
-      dist_val[0] = depthimage.at<float>(result.y+result.height/3 , result.x+result.width/3) ;
-      dist_val[1] = depthimage.at<float>(result.y+result.height/3 , result.x+2*result.width/3) ;
-      dist_val[2] = depthimage.at<float>(result.y+2*result.height/3 , result.x+result.width/3) ;
-      dist_val[3] = depthimage.at<float>(result.y+2*result.height/3 , result.x+2*result.width/3) ;
-      dist_val[4] = depthimage.at<float>(result.y+result.height/2 , result.x+result.width/2) ;
-
-      float distance = 0;
-      int num_depth_points = 5;
-      for(int i = 0; i < 5; i++)
-      {
-        if(dist_val[i] > 0.4 && dist_val[i] < 10.0)
-          distance += dist_val[i];
-        else
-          num_depth_points--;
+    const cv::Rect image_bounds(0, 0, rgb_image_.cols, rgb_image_.rows);
+    if (renew_roi_) {
+      selected_roi_ &= image_bounds;
+      if (selected_roi_.width > 4 && selected_roi_.height > 4) {
+        tracker_.init(selected_roi_, rgb_image_);
+        tracking_active_ = true;
       }
-      distance /= num_depth_points;
-      if(distance>0.6)  distance = distance;
-        else            distance = 0.6;
-      line_distance = distance;
- 
-      //calculate linear speed
-      /*
-      if(distance > Min_distance)
-        linear_speed = distance * k_linear_speed + h_linear_speed;
-      else
-        linear_speed = 0;
-      
-      if(distance > Max_distance)
-        linear_speed = 0.6;
-      if(distance < Min_distance)
-        linear_speed = -0.6;
-
-      if(linear_speed > Max_linear_speed)
-        linear_speed = Max_linear_speed;
-*/
-      //calculate rotation speed
-      int center_x = result.x + result.width/2;
-      int center_y = result.y + result.height/2;
-      angle_distance2=center_y;
-      angle_distance = center_x;
-/*
-      if(center_x < ERROR_OFFSET_X_left1) 
-        rotation_speed =  Max_rotation_speed;
-      else if(center_x > ERROR_OFFSET_X_left1 && center_x < ERROR_OFFSET_X_left2)
-        rotation_speed = -k_rotation_speed * center_x + h_rotation_speed_left;
-      else if(center_x > ERROR_OFFSET_X_right1 && center_x < ERROR_OFFSET_X_right2)
-        rotation_speed = -k_rotation_speed * center_x + h_rotation_speed_right;
-      else if(center_x > ERROR_OFFSET_X_right2)
-        rotation_speed = -Max_rotation_speed;
-      else 
-        rotation_speed = 0;
-*/
-      std::cout <<  "linear_speed = " << linear_speed << "  rotation_speed = " << rotation_speed << std::endl;
-
-      // std::cout <<  dist_val[0]  << " / " <<  dist_val[1] << " / " << dist_val[2] << " / " << dist_val[3] <<  " / " << dist_val[4] << std::endl;
-      // std::cout <<  "distance = " << distance << std::endl;
+      renew_roi_ = false;
     }
 
-  	//cv::imshow(DEPTH_WINDOW, depthimage);
-  	cv::waitKey(1);
+    if (tracking_active_) {
+      tracked_roi_ = tracker_.update(rgb_image_) & image_bounds;
+      if (tracked_roi_.width <= 4 || tracked_roi_.height <= 4) {
+        tracking_active_ = false;
+      } else {
+        cv::rectangle(rgb_image_, tracked_roi_, cv::Scalar(0, 255, 255), 2);
+      }
+    } else if (selected_roi_.width > 0 && selected_roi_.height > 0) {
+      cv::rectangle(rgb_image_, selected_roi_, cv::Scalar(255, 0, 0), 2);
+    }
+
+    if (show_window_) {
+      cv::imshow(kRgbWindow, rgb_image_);
+      cv::waitKey(1);
+    }
   }
+
+  void onDepthImage(const sensor_msgs::msg::Image::ConstSharedPtr message)
+  {
+    if (!tracking_active_ || tracked_roi_.width <= 4 || tracked_roi_.height <= 4) {
+      return;
+    }
+
+    try {
+      const auto depth = cv_bridge::toCvShare(message);
+      if (rgb_image_.empty()) {
+        return;
+      }
+
+      const double scale_x =
+        static_cast<double>(depth->image.cols) / static_cast<double>(rgb_image_.cols);
+      const double scale_y =
+        static_cast<double>(depth->image.rows) / static_cast<double>(rgb_image_.rows);
+      const cv::Rect bounds(0, 0, depth->image.cols, depth->image.rows);
+      const cv::Rect roi(
+        static_cast<int>(std::lround(tracked_roi_.x * scale_x)),
+        static_cast<int>(std::lround(tracked_roi_.y * scale_y)),
+        static_cast<int>(std::lround(tracked_roi_.width * scale_x)),
+        static_cast<int>(std::lround(tracked_roi_.height * scale_y)));
+      const cv::Rect depth_roi = roi & bounds;
+      if (depth_roi.width <= 4 || depth_roi.height <= 4) {
+        return;
+      }
+
+      const std::array<cv::Point, 5> points = {
+        cv::Point(depth_roi.x + depth_roi.width / 3, depth_roi.y + depth_roi.height / 3),
+        cv::Point(
+          depth_roi.x + 2 * depth_roi.width / 3,
+          depth_roi.y + depth_roi.height / 3),
+        cv::Point(
+          depth_roi.x + depth_roi.width / 3,
+          depth_roi.y + 2 * depth_roi.height / 3),
+        cv::Point(
+          depth_roi.x + 2 * depth_roi.width / 3,
+          depth_roi.y + 2 * depth_roi.height / 3),
+        cv::Point(
+          depth_roi.x + depth_roi.width / 2,
+          depth_roi.y + depth_roi.height / 2),
+      };
+
+      std::vector<double> valid_depths;
+      valid_depths.reserve(points.size());
+      for (const auto & point : points) {
+        double distance = 0.0;
+        if (message->encoding == sensor_msgs::image_encodings::TYPE_32FC1) {
+          distance = depth->image.at<float>(point);
+        } else if (
+          message->encoding == sensor_msgs::image_encodings::TYPE_16UC1 ||
+          message->encoding == sensor_msgs::image_encodings::MONO16)
+        {
+          distance = depth->image.at<uint16_t>(point) / 1000.0;
+        } else {
+          RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 5000,
+            "不支持深度图编码 %s，仅支持 32FC1 和 16UC1。",
+            message->encoding.c_str());
+          return;
+        }
+
+        if (std::isfinite(distance) && distance >= 0.2 && distance <= 10.0) {
+          valid_depths.push_back(distance);
+        }
+      }
+
+      geometry_msgs::msg::Twist tracking;
+      if (!valid_depths.empty()) {
+        const double sum =
+          std::accumulate(valid_depths.begin(), valid_depths.end(), 0.0);
+        tracking.linear.x = sum / static_cast<double>(valid_depths.size());
+        tracking.angular.y = tracked_roi_.y + tracked_roi_.height * 0.5;
+        tracking.angular.z = tracked_roi_.x + tracked_roi_.width * 0.5;
+      }
+      tracking_publisher_->publish(tracking);
+    } catch (const cv_bridge::Exception & error) {
+      RCLCPP_ERROR(get_logger(), "深度图像转换失败：%s", error.what());
+    }
+  }
+
+  std::string rgb_topic_;
+  std::string depth_topic_;
+  bool show_window_{true};
+  bool selecting_{false};
+  bool renew_roi_{false};
+  bool tracking_active_{false};
+  cv::Point selection_origin_;
+  cv::Rect selected_roi_;
+  cv::Rect tracked_roi_;
+  cv::Mat rgb_image_;
+  KCFTracker tracker_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr tracking_publisher_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr rgb_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_subscription_;
 };
 
-int main(int argc, char** argv)
+int main(int argc, char ** argv)
 {
-	ros::init(argc, argv, "kcf_tracker");
-	ImageConverter ic;
-  /*
-  private_nh.param<float>("Max_linear_speed", Max_linear_speed, 1.0); //固定串口
-  private_nh.param<float>("Min_linear_speed", Min_linear_speed, 0.2); //和下位机底层波特率115200 不建议更高的波特率了
-  private_nh.param<float>("Min_distance", Min_distance, 0.4);//平滑控制指令 
-  private_nh.param<float>("Max_distance", Max_distance, 0.8);//ID
-  private_nh.param<float>("Max_rotation_speed", Max_rotation_speed, 0.7);//ID
-*/
-	while(ros::ok())
-	{
-	  ros::spinOnce();
-
-          geometry_msgs::Twist twist;
-
-         twist.linear.x = line_distance; 
-         twist.linear.y = 0; 
-         twist.linear.z = 0;
-         twist.angular.x = 0; 
-         twist.angular.y = angle_distance2; 
-         twist.angular.z = angle_distance;
-
-         ic.pub.publish(twist);
-
-    
-         if (cvWaitKey(33) == 'q')
-            break;
-	}
-
-	return 0;
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<KcfTrackerNode>());
+  rclcpp::shutdown();
+  return 0;
 }
-

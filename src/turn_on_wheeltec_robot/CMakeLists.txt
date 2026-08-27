@@ -1,37 +1,49 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.8)
 project(turn_on_wheeltec_robot)
 
-find_package(catkin REQUIRED COMPONENTS
-  actionlib
-  actionlib_msgs
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+endif()
+
+add_compile_options(-Wall -Wextra -Wpedantic)
+
+find_package(ament_cmake REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+
+add_executable(wheeltec_robot_node
+  src/wheeltec_robot.cpp
+)
+target_include_directories(wheeltec_robot_node PRIVATE include)
+ament_target_dependencies(wheeltec_robot_node
   geometry_msgs
-  message_generation
   nav_msgs
-  nav_msgs
-  roscpp
-  serial
-  roslib
-  rospy
+  rclcpp
   sensor_msgs
   std_msgs
-  tf
+  tf2_ros
 )
 
-# ulimit -c unlimited
-# ssh firefly@192.168.1.76
-add_compile_options(-g -std=c++11)    #-g -> core dumped
-
-catkin_package(
-  #INCLUDE_DIRS include
-  #LIBRARIES turn_on_wheeltec_robot
-  #CATKIN_DEPENDS geometry_msgs message_generation nav_msgs nav_msgs roscpp roslib rospy sensor_msgs std_msgs tf
-  #DEPENDS system_lib
+install(TARGETS wheeltec_robot_node
+  DESTINATION lib/${PROJECT_NAME}
 )
 
-# defind robot status massage
-# command atkin_make -DCATKIN_WHITELIST_PACKAGES="new_msg"
-include_directories(include ${catkin_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
-include_directories(include/${PROJECT_NAME})
+install(DIRECTORY config map urdf
+  DESTINATION share/${PROJECT_NAME}
+)
 
-add_executable(wheeltec_robot_node src/wheeltec_robot.cpp src/Quaternion_Solution.cpp)
-target_link_libraries(wheeltec_robot_node ${catkin_LIBRARIES})
+# 仅安装 ROS2 Python launch，旧 ROS1 XML 文件继续留在源码中供迁移对照。
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
+  FILES_MATCHING PATTERN "*.launch.py"
+)
+
+install(PROGRAMS scripts/wheeltec_udev.sh
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+ament_package()

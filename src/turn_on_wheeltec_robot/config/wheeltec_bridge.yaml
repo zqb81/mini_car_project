@@ -1,0 +1,12 @@
+wheeltec_robot:
+  ros__parameters:
+    serial_port: /dev/wheeltec_controller
+    baud_rate: 115200
+    odom_frame: odom
+    base_frame: base_footprint
+    imu_frame: imu_link
+    publish_odom_tf: true
+    cmd_vel_timeout: 0.5
+    max_linear_speed: 1.5
+    max_lateral_speed: 1.5
+    max_angular_speed: 3.0

@@ -1,10 +1,11 @@
-# ROS catkin 构建产物
+# ROS1 catkin 与 ROS2 colcon 构建产物
 build/
 devel/
 install/
 log/
 logs/
 .catkin_tools/
+.colcon/
 
 # Python 缓存与编辑器临时文件
 __pycache__/
@@ -25,3 +26,4 @@ Listings/
 *.crf
 *.uvguix.*
 *.uvoptx
+*.baiduyun.p.downloading

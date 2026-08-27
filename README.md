@@ -1,419 +1,469 @@
-# Mini ROS 小车工程
+# Mini ROS2 小车工程
 
-这是一个同时维护 STM32 底盘固件与树莓派 ROS 1 上位机程序的工程。树莓派负责感知、建图、导航与目标跟踪；STM32 负责编码器采样、车辆运动学、速度闭环和电机 PWM。两端通过 USB 串口连接，ROS 速度话题最终会转换为 STM32 可识别的二进制帧。
+本工程包含 STM32F103VET6 底盘固件、ROS2 底盘串口桥接、KCF RGB-D 目标跟踪，以及 RTAB-Map + Nav2 建图导航配置。
 
-> 本仓库中的 ROS 包来自随车资料，面向 ROS 1 与 catkin 工作空间。不要将当前 `main` 分支当作 ROS 2 工程使用。
+目标环境：
 
-## 1. 系统结构
+- Ubuntu 22.04
+- ROS2 Humble
+- Raspberry Pi 4 / Raspberry Pi 5
+- ament_cmake + colcon
+- RTAB-Map ROS2
+- Nav2
 
-```text
-相机 / 激光雷达 / 上位机算法
-              |
-              v
-树莓派 ROS 1
-  - 建图、定位、导航、视觉跟踪
-  - 发布 /cmd_vel
-  - 发布 /odom、/imu、/PowerVoltage
-              |
-              | /dev/wheeltec_controller, 115200 bit/s
-              v
-STM32F103VET6
-  - 串口协议解析
-  - 车型运动学与四路速度 PI
-  - 编码器、IMU、电压采样
-  - TIM8 PWM 与电机方向控制
-              |
-              v
-电机、霍尔编码器、IMU 与电池
-```
+STM32 通信协议保持不变，因此已经烧录的霍尔编码器版固件可以继续使用。
 
-### 1.1 职责边界
+## 1. 系统架构
 
-| 层级 | 主要职责 | 核心代码 |
-| --- | --- | --- |
-| 树莓派 ROS | 感知、建图、导航、视觉跟踪和速度决策 | `src/turn_on_wheeltec_robot`、`src/kcf_track` |
-| 串口桥接 | `/cmd_vel` 与 STM32 二进制协议互转，发布里程计与 IMU | `src/turn_on_wheeltec_robot/src/wheeltec_robot.cpp` |
-| STM32 | 实时控制、编码器闭环、PWM 输出和基础保护 | `F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)` |
+~~~text
+RGB-D 相机 --------> RTAB-Map / KCF
+                         |
+激光雷达 ----------> RTAB-Map / Nav2
+                         |
+                         v
+                map -> odom -> base_footprint
+                         |
+Nav2 / KCF ----------> /cmd_vel
+                         |
+                         v
+                wheeltec_robot_node
+                         |
+       /dev/wheeltec_controller, 115200 bit/s
+                         |
+                         v
+                    STM32 USART3
+                         |
+                         v
+               编码器闭环、PWM、电机
+~~~
+
+| 模块 | 职责 |
+| --- | --- |
+| RTAB-Map | RGB-D + 激光雷达建图、回环检测、定位，发布 map -> odom |
+| Nav2 | 全局规划、局部避障、行为树导航，发布 /cmd_vel |
+| KCF | 目标框跟踪、目标深度估计和跟随速度计算 |
+| ROS2 底盘桥接 | ROS2 话题与 STM32 二进制协议互转，发布 odom -> base_footprint |
+| STM32 | 车型运动学、四路轮速 PI、编码器与 IMU 采集、电机 PWM |
 
 ## 2. 仓库结构
 
-```text
+~~~text
 mini_car/
 ├── F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/
-│   ├── USER/                         Keil 工程入口与中断配置
-│   ├── BALANCE/                      运动学、速度 PI、车型参数、MPU9250
-│   ├── HARDWARE/                     电机、编码器、串口、CAN、ADC 等驱动
-│   ├── FreeRTOS/                     FreeRTOS 内核与 ARM CM3 移植层
-│   └── USER/WHEELTEC.uvprojx         Keil MDK 工程文件
+│   ├── USER/                         Keil 工程与程序入口
+│   ├── BALANCE/                      运动学、速度 PI、车型参数
+│   ├── HARDWARE/                     电机、编码器、串口、CAN、ADC
+│   └── FreeRTOS/                     FreeRTOS 9
 ├── src/
-│   ├── turn_on_wheeltec_robot/       ROS 底盘通信、TF、导航与建图配置
-│   └── kcf_track/                    OpenCV KCF 视觉目标跟踪
-├── .gitignore                        构建产物与本机配置忽略规则
-├── .gitattributes                    跨 Windows / Linux 的行尾规则
-└── README.md                         本文档
-```
-
-## 3. STM32 底盘固件
-
-### 3.1 构建环境
-
-- 芯片：STM32F103VET6。
-- 工程：`USER/WHEELTEC.uvprojx`。
-- IDE：Keil MDK，历史构建使用 ARMCC 5.06。
-- 时钟：72 MHz。
-- RTOS：FreeRTOS 9.0.0，系统 Tick 为 1 ms。
-- 编码器版本：本目录明确适配霍尔编码器。
-
-使用 Keil 打开 [WHEELTEC.uvprojx](F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/USER/WHEELTEC.uvprojx) 后，选择目标 `FreeRTOS` 并编译。构建输出在 `OBJ/`，已由 Git 忽略。
-
-### 3.2 任务与控制周期
-
-| FreeRTOS 任务 | 优先级 | 周期 | 工作内容 |
-| --- | ---: | ---:| --- |
-| `Balance_task` | 4 | 10 ms | 读取编码器、处理控制源、逆运动学、PI 和 PWM |
-| `MPU9250_task` | 3 | 10 ms | 读取加速度、陀螺仪、磁力计 |
-| `pstwo_task` | 4 | 10 ms | 采集 PS2 手柄 |
-| `data_task` | 4 | 50 ms | 向串口和 CAN 上报底盘状态 |
-| `show_task` | 3 | 100 ms | 读取电压、OLED 和蜂鸣器 |
-| `led_task` | 3 | 动态 | 状态灯闪烁 |
-
-主控制路径位于 `BALANCE/BALANCE/balance.c`：以 100 Hz 读取四路编码器，根据车型将 `Vx`、`Vy`、`Vz` 分解为轮速目标，并通过四个增量式 PI 控制器驱动 TIM8 的四路 PWM。
-
-### 3.3 车型选择
-
-开机时，STM32 通过 ADC8 读取电位器档位，选择车型参数。当前源码支持：
-
-| 枚举值 | 车型 | 特性 |
-| ---: | --- | --- |
-| `0` | `Mec_Car` | 四轮麦克纳姆，可横移 |
-| `1` | `Omni_Car` | 三轮全向，可横移 |
-| `2` | `Akm_Car` | 阿克曼，带舵机 |
-| `3` | `Diff_Car` | 两轮差速 |
-| `4` | `FourWheel_Car` | 四驱 |
-| `5` | `Tank_Car` | 履带 / 差速式 |
-
-ROS 启动文件 `turn_on_wheeltec_robot.launch` 的默认模型为 `mini_mec`。实车车型必须与 STM32 电位器档位及 ROS 传入的 `car_mode` 对应，否则运动学、TF 外形和导航参数会不一致。
-
-### 3.4 STM32 侧安全条件
-
-电机输出需同时满足以下条件：
-
-- 电池电压不低于 10 V。
-- 硬件使能开关有效。
-- MPU9250 启动零偏校准完成，软件停止标志已释放。
-
-当前底盘固件不具备树莓派通信超时自动停车机制。不要在实际运动中依赖“拔掉串口或断开 ROS”来停止小车；应发送零速度、关闭使能开关，或优先增加通信看门狗后再进行无人值守测试。
-
-## 4. 树莓派 ROS 1 部分
-
-### 4.1 `turn_on_wheeltec_robot`
-
-该包是 ROS 与 STM32 底盘之间的桥接层，编译目标为 `wheeltec_robot_node`。
-
-它会：
-
-1. 订阅 `cmd_vel`，接收 `geometry_msgs/Twist`。
-2. 把 `linear.x`、`linear.y`、`angular.z` 编码为 STM32 下行速度帧。
-3. 从串口读取 STM32 的状态帧。
-4. 发布 `odom`、`imu` 和 `PowerVoltage`。
-5. 发布 `odom`、`base_footprint`、相机等 TF 关系所需的配置。
-
-核心文件：
-
-- [wheeltec_robot.cpp](src/turn_on_wheeltec_robot/src/wheeltec_robot.cpp)：串口收发、里程计积分和 ROS 话题发布。
-- [base_serial.launch](src/turn_on_wheeltec_robot/launch/include/base_serial.launch)：底盘设备名、波特率和速度平滑入口。
-- [turn_on_wheeltec_robot.launch](src/turn_on_wheeltec_robot/launch/turn_on_wheeltec_robot.launch)：底盘、机器人模型和导航组件总启动文件。
-
-### 4.2 `kcf_track`
-
-该包使用 OpenCV 的 KCF 目标跟踪器订阅 RGB 与深度图像，输出目标距离和像素角度；`kcf_follow.py` 再计算跟随速度并发布 `cmd_vel`。启动文件为：
-
-```bash
-roslaunch kcf_track kcf_tracker.launch
-```
-
-该启动文件会同时启动底盘节点和 Astra 相机。运行 KCF 跟踪前，请确保现场没有另一个已在运行的底盘节点或相机节点，以避免同名节点、串口和相机设备竞争。
-
-### 4.3 ROS 话题
-
-| 话题 | 类型 | 方向 | 说明 |
-| --- | --- | --- | --- |
-| `/cmd_vel` | `geometry_msgs/Twist` | ROS -> STM32 | 目标速度。使用 `linear.x`、`linear.y`、`angular.z`。 |
-| `/odom` | `nav_msgs/Odometry` | STM32 -> ROS | 基于编码器积分得到的里程计。 |
-| `/imu` | `sensor_msgs/Imu` | STM32 -> ROS | STM32 回传的 MPU9250 原始数据换算结果。 |
-| `/PowerVoltage` | `std_msgs/Float32` | STM32 -> ROS | 电池电压，单位 V。 |
-| `/scan` | `sensor_msgs/LaserScan` | 雷达 -> ROS | 2D 建图和导航的激光雷达数据。 |
-| `/camera/rgb/image_raw` | `sensor_msgs/Image` | 相机 -> ROS | RGB 图像。 |
-| `/camera/depth/image` | `sensor_msgs/Image` | 相机 -> ROS | 深度图像。 |
-| `/camera/rgb/camera_info` | `sensor_msgs/CameraInfo` | 相机 -> ROS | RGB 相机内参。 |
-| `/rtabmap/grid_map` | `nav_msgs/OccupancyGrid` | RTAB-Map -> ROS | RTAB-Map 生成的栅格地图。 |
-
-## 5. 树莓派与 STM32 串口通信
-
-### 5.1 连接方式
-
-底盘节点默认打开 `/dev/wheeltec_controller`，波特率为 `115200`。该软链接由 `scripts/wheeltec_udev.sh` 创建，用于避免重启后 USB 串口序号变化。
-
-在连接控制板前，先检查：
-
-```bash
-ls -l /dev/wheeltec_controller
-lsusb
-udevadm info -a -n /dev/ttyUSB0
-```
-
-`wheeltec_udev.sh` 中的 VID、PID 和序列号是随车资料中的示例。务必使用实际设备信息核对后再执行规则脚本，避免将雷达错误绑定为控制器。
-
-若仅临时调试，可修改 `base_serial.launch` 的 `usart_port_name` 为实际设备，如 `/dev/ttyUSB0`。长期部署应使用稳定的 udev 软链接。
-
-### 5.2 下行控制帧：ROS 到 STM32
-
-总长 11 字节，所有速度均为有符号 16 位大端整数，数值是 ROS 单位乘以 1000。
-
-| 字节索引 | 内容 | 说明 |
-| ---: | --- | --- |
-| 0 | `0x7B` | 帧头 |
-| 1-2 | 保留 | 固定为 0 |
-| 3-4 | `Vx * 1000` | `linear.x`，m/s 转 mm/s |
-| 5-6 | `Vy * 1000` | `linear.y`，m/s 转 mm/s |
-| 7-8 | `Vz * 1000` | `angular.z`，rad/s 放大 1000 倍 |
-| 9 | XOR | 字节 0 至 8 的异或校验 |
-| 10 | `0x7D` | 帧尾 |
-
-### 5.3 上行状态帧：STM32 到 ROS
-
-总长 24 字节：帧头、停止状态、三轴底盘速度、三轴加速度、三轴角速度、电池电压、异或校验和帧尾。速度和电压均采用放大 1000 倍的有符号 16 位整数；IMU 原始量由 ROS 节点按当前 MPU9250 量程换算。
-
-## 6. 安装与构建
-
-### 6.1 系统要求
-
-建议使用 Raspberry Pi OS / Ubuntu 上的 ROS 1 环境。源码兼容 catkin，实际所需依赖还取决于要启用的功能：
-
-- 基础底盘：`roscpp`、`serial`、`tf`、`nav_msgs`、`sensor_msgs`、`geometry_msgs`。
-- 视觉跟踪：OpenCV、`cv_bridge`、`image_transport`、Astra 相机驱动。
-- 2D 建图与导航：雷达驱动、`gmapping` 或其他 SLAM 包、`move_base`、`amcl`、地图服务。
-- 3D 建图与导航：`rtabmap_ros`、Astra 相机驱动、雷达驱动、导航栈。
-
-查看当前 ROS 发行版：
-
-```bash
-rosversion -d
-```
-
-对于 Noetic，可优先安装二进制 RTAB-Map 包：
-
-```bash
-sudo apt update
-sudo apt install ros-noetic-rtabmap-ros
-```
-
-若使用 Melodic，请将上面的 `noetic` 替换为 `melodic`，并确认该发行版的软件源提供对应包。没有二进制包时，再根据 [RTAB-Map 官方安装文档](https://github.com/introlab/rtabmap/wiki/Installation) 从源码构建。官方当前默认分支是 ROS 2；本项目使用 ROS 1，因此不要直接把 ROS 2 分支加入本工作空间。
-
-### 6.2 放置仓库
-
-以下示例假定 catkin 工作空间是 `~/catkin_ws`：
-
-```bash
-mkdir -p ~/catkin_ws/src
-cd ~/catkin_ws/src
-git clone https://gitee.com/qbz23/mini_car_project.git mini_car
-cd ~/catkin_ws
-rosdep install --from-paths src --ignore-src -r -y
-catkin_make
-source devel/setup.bash
-```
-
-为使每次新终端自动加载工作空间，可在确认路径无误后加入 `~/.bashrc`：
-
-```bash
-source ~/catkin_ws/devel/setup.bash
-```
-
-### 6.3 基础自检
-
-先只启动底盘和模型：
-
-```bash
-roslaunch turn_on_wheeltec_robot turn_on_wheeltec_robot.launch
-```
-
-另开一个终端检查：
-
-```bash
-rostopic list
-rostopic echo -n 1 /PowerVoltage
-rostopic echo -n 1 /odom
-rosrun tf tf_echo odom_combined base_footprint
-```
-
-在悬空状态下再测试零速度，随后才进行低速直线测试：
-
-```bash
-rostopic pub -r 10 /cmd_vel geometry_msgs/Twist \
-  '{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}'
-```
-
-确认方向、轮速与里程计正确后，才可逐步提高速度。实车测试应始终确保急停、使能开关和机械支撑可用。
-
-## 7. 常用启动方式
-
-### 7.1 2D 建图
-
-```bash
-roslaunch turn_on_wheeltec_robot mapping.launch
-```
-
-`mapping.launch` 默认使用 `gmapping`，并启动雷达、底盘节点和机器人模型。可通过 `mapping_mode` 切换为 `hector` 或 `karto`，前提是相应 ROS 包已经安装。
-
-### 7.2 已有地图的 2D 导航
-
-```bash
-roslaunch turn_on_wheeltec_robot navigation.launch
-```
-
-默认地图为 `src/turn_on_wheeltec_robot/map/WHEELTEC.yaml`。替换地图时，应同时替换配套 `.yaml` 和 `.pgm` 文件，或通过 `map_file` 参数传入新地图路径。
-
-### 7.3 RTAB-Map 3D 建图
-
-```bash
-roslaunch turn_on_wheeltec_robot 3d_mapping.launch
-```
-
-该启动文件会启动 2D 建图、Astra 相机和 RTAB-Map。为适配树莓派负载，当前设置会将深度分辨率降为 `320x240`。RTAB-Map 使用 `/odom`、`/scan`、RGB 图和深度图；启动失败时优先检查这些话题与相机 TF。
-
-### 7.4 RTAB-Map 3D 导航
-
-```bash
-roslaunch turn_on_wheeltec_robot 3d_navigation.launch
-```
-
-该流程将 `/rtabmap/grid_map` 作为 AMCL 与 `move_base` 的地图输入。树莓派性能有限时，应关闭 `rtabmapviz`、降低图像分辨率、减慢车速并减少不必要的同时运行节点。
-
-### 7.5 KCF 视觉跟随
-
-```bash
-roslaunch kcf_track kcf_tracker.launch
-```
-
-KCF 相关参数位于 `kcf_tracker.launch`：最大线速度为 `0.3 m/s`，最大角速度为 `0.4 rad/s`。应从保守速度开始调参，避免目标丢失或深度无效时出现不期望运动。
-
-## 8. RTAB-Map 适配说明
-
-本项目已经包含 `rtabmap_ros` 的启动配置，但不包含 RTAB-Map 本体源码。安装完成后，至少满足以下条件才能正常使用：
-
-| 条件 | 验证命令 |
+│   ├── turn_on_wheeltec_robot/
+│   │   ├── config/
+│   │   │   ├── wheeltec_bridge.yaml  串口桥接参数
+│   │   │   └── nav2_params.yaml      Nav2 参数
+│   │   ├── launch/
+│   │   │   ├── base.launch.py
+│   │   │   ├── rtabmap_mapping.launch.py
+│   │   │   └── rtabmap_navigation.launch.py
+│   │   ├── src/wheeltec_robot.cpp    ROS2 串口桥接
+│   │   ├── urdf/                     车型模型
+│   │   └── map/                      示例地图
+│   └── kcf_track/
+│       ├── launch/kcf_tracking.launch.py
+│       ├── scripts/kcf_follow.py
+│       └── src/                      KCF 与 ROS2 图像节点
+└── README.md
+~~~
+
+原 ROS1 的 XML launch、send_mark.py、imageResize.py 和旧导航参数继续留在源码中供迁移对照，但 CMake 只安装 .launch.py，它们不会进入 ROS2 安装空间。
+
+## 3. ROS2 迁移内容
+
+底盘桥接已经从 roscpp/catkin 迁移为 rclcpp/ament：
+
+| ROS1 | ROS2 |
 | --- | --- |
-| RTAB-Map 已安装 | `roscd rtabmap_ros` |
-| RGB 图像可用 | `rostopic hz /camera/rgb/image_raw` |
-| 深度图可用 | `rostopic hz /camera/depth/image` |
-| 相机内参可用 | `rostopic echo -n 1 /camera/rgb/camera_info` |
-| 轮速里程计可用 | `rostopic echo -n 1 /odom` |
-| 雷达数据可用 | `rostopic echo -n 1 /scan` |
-| TF 链完整 | `rosrun tf view_frames` |
+| roscpp | rclcpp |
+| catkin | ament_cmake |
+| catkin_make | colcon build |
+| tf | tf2_ros |
+| serial ROS 包 | Linux termios |
+| XML .launch | Python .launch.py |
 
-对 Raspberry Pi 3/4 而言，RTAB-Map 的计算量较高。优先使用二进制包，保持低分辨率与低速移动；如果从源码编译，需预留足够内存和交换空间。有关依赖、源码构建与树莓派限制，请以 [官方安装说明](https://github.com/introlab/rtabmap/wiki/Installation) 为准。
+新底盘节点增加了：
 
-## 9. 常见问题
+- 串口断开后每 2 秒自动重连。
+- 流式 24 字节状态帧解析和错位重同步。
+- /cmd_vel 超时后主动向 STM32 发送零速度。
+- 速度限幅和 int16 协议溢出保护。
+- /chassis_enabled 状态话题。
+- 平面里程计积分和 odom -> base_footprint TF。
 
-### 9.1 找不到 `/dev/wheeltec_controller`
+KCF 节点已经迁移为 rclcpp，跟随节点已经迁移为 Python 3 + rclpy，并支持 32FC1/16UC1 深度图、ROI 边界检查和跟踪超时停车。
 
-检查 USB 连接和设备枚举：
+## 4. STM32 固件
 
-```bash
-dmesg | tail -n 50
-ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
-```
+### 4.1 基本信息
 
-若有实际串口但没有软链接，核对 udev 规则的 VID、PID 和序列号。不要盲目执行或复制随车规则脚本。
+- MCU：STM32F103VET6
+- 主频：72 MHz
+- RTOS：FreeRTOS 9.0.0
+- 控制周期：100 Hz
+- PWM：TIM8 四通道，约 10 kHz
+- 默认速度 PI：Kp=300、Ki=300
 
-### 9.2 底盘节点能启动但没有 `/odom`
+Keil 工程：
 
-依次检查串口设备、115200 波特率、STM32 固件是否已烧录、底盘使能开关、电池电压，以及控制板是否确实连接到 STM32 的 USART3 通信口。
+~~~text
+F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/USER/WHEELTEC.uvprojx
+~~~
 
-### 9.3 发送 `/cmd_vel` 后不动
+### 4.2 车型对应
 
-确认 STM32 完成约 10 秒的 IMU 零偏校准，电压高于保护阈值，使能开关打开，且 ROS 速度话题由 `wheeltec_robot_node` 订阅：
+| STM32 枚举 | ROS2 model | 车型 |
+| --- | --- | --- |
+| Mec_Car | mini_mec | 麦克纳姆 |
+| Omni_Car | mini_omni | 三轮全向 |
+| Akm_Car | mini_akm | 阿克曼 |
+| Diff_Car | mini_diff | 两轮差速 |
+| FourWheel_Car | mini_4wd | 四轮驱动 |
 
-```bash
-rostopic info /cmd_vel
-```
+STM32 电位器档位必须与 ROS2 的 model 参数一致。
 
-### 9.4 RTAB-Map 无法生成地图
+### 4.3 安全提示
 
-确认 `rtabmap_ros` 已安装，并按本 README 的 3D 自检表检查 RGB、深度、雷达、里程计和 TF。相机深度与 RGB 时间戳不同步时，`rgbd_sync` 会导致数据不进入 RTAB-Map。
+STM32 原固件没有通信超时停车机制。本次 ROS2 桥接增加了上位机看门狗，但仍建议在 STM32 侧增加独立通信看门狗，因为树莓派死机时 ROS2 无法继续发送零速度。
 
-### 9.5 `catkin_make` 找不到包或依赖
+首次电机测试必须让车轮悬空，并保证硬件使能开关随时可关闭。
 
-先确认仓库放置在工作空间的 `src/` 内，再执行：
+## 5. 串口协议
 
-```bash
-cd ~/catkin_ws
+默认设备 /dev/wheeltec_controller，115200 bit/s，8N1，对应 STM32 USART3。
+
+### 5.1 ROS2 到 STM32
+
+总长 11 字节：
+
+| 索引 | 数据 |
+| ---: | --- |
+| 0 | 帧头 0x7B |
+| 1-2 | 保留，固定为 0 |
+| 3-4 | linear.x * 1000，有符号大端 int16 |
+| 5-6 | linear.y * 1000，有符号大端 int16 |
+| 7-8 | angular.z * 1000，有符号大端 int16 |
+| 9 | 字节 0 至 8 的 XOR |
+| 10 | 帧尾 0x7D |
+
+### 5.2 STM32 到 ROS2
+
+总长 24 字节：
+
+| 索引 | 数据 |
+| ---: | --- |
+| 0 | 帧头 0x7B |
+| 1 | STM32 软件停止标志 |
+| 2-7 | Vx、Vy、Vz |
+| 8-13 | 三轴加速度原始值 |
+| 14-19 | 三轴角速度原始值 |
+| 20-21 | 电池电压，放大 1000 倍 |
+| 22 | 字节 0 至 21 的 XOR |
+| 23 | 帧尾 0x7D |
+
+## 6. ROS2 话题与 TF
+
+| 名称 | 类型 | 方向 |
+| --- | --- | --- |
+| /cmd_vel | geometry_msgs/msg/Twist | Nav2/KCF -> 底盘 |
+| /odom | nav_msgs/msg/Odometry | 底盘 -> ROS2 |
+| /imu | sensor_msgs/msg/Imu | 底盘 -> ROS2 |
+| /PowerVoltage | std_msgs/msg/Float32 | 底盘 -> ROS2 |
+| /chassis_enabled | std_msgs/msg/Bool | 底盘 -> ROS2 |
+| /scan | sensor_msgs/msg/LaserScan | 雷达 -> RTAB-Map/Nav2 |
+| /map | nav_msgs/msg/OccupancyGrid | RTAB-Map -> Nav2 |
+
+TF 链：
+
+~~~text
+map                 RTAB-Map 发布
+└── odom            底盘里程计参考系
+    └── base_footprint
+        ├── base_link
+        ├── imu_link
+        └── camera_link
+~~~
+
+RTAB-Map 发布 map -> odom，底盘节点发布 odom -> base_footprint。不要启动第二个发布相同 TF 的节点。
+
+## 7. 安装依赖
+
+先安装 ROS2 Humble：
+
+~~~bash
+sudo apt update
+sudo apt install \
+  ros-humble-desktop \
+  ros-humble-navigation2 \
+  ros-humble-nav2-bringup \
+  ros-humble-rtabmap-ros \
+  ros-humble-cv-bridge \
+  ros-humble-robot-state-publisher
+~~~
+
+RGB-D 相机和激光雷达驱动根据实物型号单独安装。默认沿用当前 Astra 工程的话题：
+
+~~~text
+/camera/rgb/image_raw
+/camera/depth/image
+/camera/rgb/camera_info
+/scan
+~~~
+
+RealSense 等相机可以覆盖话题，并应使用对齐到彩色相机的深度图：
+
+~~~bash
+rgb_topic:=/camera/color/image_raw \
+depth_topic:=/camera/aligned_depth_to_color/image_raw \
+camera_info_topic:=/camera/color/camera_info
+~~~
+
+## 8. 获取与构建
+
+~~~bash
+mkdir -p ~/mini_car_ws/src
+cd ~/mini_car_ws/src
+git clone https://gitee.com/qbz23/mini_car_project.git mini_car
+
+cd ~/mini_car_ws
+source /opt/ros/humble/setup.bash
+rosdep update
 rosdep install --from-paths src --ignore-src -r -y
-catkin_make
-```
+colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+~~~
 
-外设驱动和导航包属于系统依赖，未必包含在本仓库中，应按所使用的相机、雷达和 ROS 发行版单独安装。
+可以把以下内容加入 ~/.bashrc：
 
-## 10. Git 版本管理
+~~~bash
+source /opt/ros/humble/setup.bash
+source ~/mini_car_ws/install/setup.bash
+~~~
 
-### 10.1 分支约定
+## 9. udev 串口配置
 
-- `main`：始终保存可构建、可部署、经过基础验证的版本。
-- `feature/<功能>`：新增功能，例如 `feature/serial-watchdog`。
-- `fix/<问题>`：缺陷修复，例如 `fix/odom-frame`。
-- `docs/<主题>`：仅文档修改，例如 `docs/deployment-guide`。
+先确定实际设备：
 
-### 10.2 日常开发流程
+~~~bash
+lsusb
+ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+udevadm info -a -n /dev/ttyUSB0
+~~~
 
-```bash
+随车脚本位于：
+
+~~~text
+src/turn_on_wheeltec_robot/scripts/wheeltec_udev.sh
+~~~
+
+脚本中的 VID、PID 和序列号是厂家示例，执行前必须与实物核对。
+
+临时测试：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot base.launch.py serial_port:=/dev/ttyUSB0
+~~~
+
+## 10. 基础底盘测试
+
+启动：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot base.launch.py \
+  model:=mini_mec \
+  serial_port:=/dev/wheeltec_controller
+~~~
+
+检查：
+
+~~~bash
+ros2 node list
+ros2 topic list
+ros2 topic echo --once /PowerVoltage
+ros2 topic echo --once /odom
+ros2 run tf2_ros tf2_echo odom base_footprint
+~~~
+
+悬空车轮后进行低速测试：
+
+~~~bash
+ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist \
+  "{linear: {x: 0.05, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}"
+~~~
+
+停止发布后，桥接节点会在默认 0.5 秒内发送零速度。
+
+## 11. RTAB-Map 建图
+
+先分别启动 RGB-D 相机和雷达驱动：
+
+~~~bash
+ros2 topic hz /camera/rgb/image_raw
+ros2 topic hz /camera/depth/image
+ros2 topic hz /scan
+~~~
+
+启动建图：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot rtabmap_mapping.launch.py \
+  model:=mini_mec \
+  database_path:=$HOME/.ros/mini_car_rtabmap.db
+~~~
+
+建图 launch 使用 -d，每次启动都会删除同一路径旧数据库。完成建图后应结束进程并备份：
+
+~~~bash
+cp ~/.ros/mini_car_rtabmap.db \
+  ~/.ros/mini_car_rtabmap_$(date +%Y%m%d_%H%M%S).db
+~~~
+
+树莓派建议使用较低 RGB-D 分辨率和帧率，保持低速移动，关闭不必要的可视化，并做好散热。
+
+## 12. RTAB-Map + Nav2 导航
+
+导航前必须已有数据库：
+
+~~~bash
+test -f ~/.ros/mini_car_rtabmap.db && echo "数据库存在"
+~~~
+
+先启动相机与雷达，再运行：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot rtabmap_navigation.launch.py \
+  model:=mini_mec \
+  database_path:=$HOME/.ros/mini_car_rtabmap.db
+~~~
+
+该 launch 会：
+
+1. 启动 STM32 底盘桥接、URDF 与静态 TF。
+2. 同步 RGB 与深度图。
+3. 以定位模式启动 RTAB-Map。
+4. 将 RTAB-Map 命名空间内的 map 重映射为全局 /map。
+5. 启动 Nav2 规划、控制、行为和速度平滑节点。
+
+Nav2 参数位于 src/turn_on_wheeltec_robot/config/nav2_params.yaml。默认参数按 Mini 麦克纳姆底盘配置，其他车型需要调整速度空间、机器人尺寸和转弯约束。
+
+## 13. KCF 视觉跟随
+
+先启动 RGB-D 相机：
+
+~~~bash
+ros2 launch kcf_track kcf_tracking.launch.py \
+  model:=mini_mec \
+  rgb_topic:=/camera/rgb/image_raw \
+  depth_topic:=/camera/depth/image
+~~~
+
+桌面环境中，在 KCF RGB 窗口拖动鼠标选择目标。无显示器时可以指定初始 ROI：
+
+~~~bash
+ros2 run kcf_track kcf_node --ros-args \
+  -p show_window:=false \
+  -p initial_roi.x:=200 \
+  -p initial_roi.y:=120 \
+  -p initial_roi.width:=120 \
+  -p initial_roi.height:=160
+~~~
+
+KCF 与 Nav2 都会发布 /cmd_vel，不能直接同时控制底盘。并行运行时应增加 twist_mux 并制定优先级。
+
+## 14. 常见问题
+
+### 14.1 串口打不开
+
+~~~bash
+ls -l /dev/wheeltec_controller
+groups
+sudo usermod -aG dialout $USER
+~~~
+
+加入 dialout 后需重新登录。
+
+### 14.2 有 /cmd_vel 但小车不动
+
+- 等待 STM32 完成约 10 秒 IMU 校准。
+- 检查电池是否高于 10 V。
+- 检查硬件使能开关与 /chassis_enabled。
+- 检查 ROS2 model 与 STM32 电位器档位。
+
+### 14.3 RTAB-Map 没有输出 /map
+
+~~~bash
+ros2 topic hz /camera/rgb/image_raw
+ros2 topic hz /camera/depth/image
+ros2 topic hz /camera/rgb/camera_info
+ros2 topic hz /scan
+ros2 topic hz /odom
+ros2 run tf2_tools view_frames
+~~~
+
+RGB、深度和相机内参时间戳无法同步时，rgbd_sync 不会输出有效数据。
+
+### 14.4 Nav2 报 map 或 TF 超时
+
+检查 map -> odom -> base_footprint -> camera_link 是否完整。若相机驱动已经发布 base 到 camera 的 TF，可关闭本工程的相机静态 TF：
+
+~~~bash
+publish_camera_tf:=false
+~~~
+
+### 14.5 编译失败
+
+~~~bash
+cd ~/mini_car_ws
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install --event-handlers console_direct+
+~~~
+
+本仓库不包含相机与雷达驱动，相关包需按硬件型号安装。
+
+## 15. Git 工作流
+
+~~~bash
 git switch main
 git pull --ff-only
-git switch -c feature/serial-watchdog
+git switch -c feature/功能名称
 
-# 修改代码，并在树莓派完成构建和实车验证
+# 修改并在树莓派编译、实车测试
 git diff --check
-git status
-git add src/turn_on_wheeltec_robot
-git commit -m "feat: 增加串口通信看门狗"
+git add .
+git commit -m "feat: 功能说明"
 
 git switch main
-git merge --no-ff feature/serial-watchdog
+git merge --no-ff feature/功能名称
 git push origin main
-```
+~~~
 
-提交信息建议使用中文或 Conventional Commits 形式，保持简短并描述结果：
+完成 colcon 构建、串口重连、超时停车、TF、RTAB-Map 定位和 Nav2 导航验证后，再创建版本标签：
 
-```text
-feat: 增加串口通信看门狗
-fix: 修正阿克曼车型的 TF 参数
-docs: 补充树莓派部署步骤
-```
+~~~bash
+git tag -a v2.0.0-ros2 -m "ROS2 Humble 与 RTAB-Map/Nav2 迁移版"
+git push origin v2.0.0-ros2
+~~~
 
-### 10.3 发布版本
+## 16. 当前限制
 
-每次实车验证通过后可创建标签：
+- 当前 Windows 工作机没有 ROS2 Humble，已完成静态语法与结构验证，最终 colcon build 必须在 Ubuntu 22.04 / Humble 上执行。
+- 相机、雷达驱动未纳入仓库。
+- Nav2 参数主要针对 Mini 麦克纳姆底盘，其他车型需要实车调参。
+- ROS1 多点导航脚本没有迁移，不参与 ROS2 安装。
+- STM32 侧仍建议增加独立通信看门狗。
 
-```bash
-git tag -a v0.1.0 -m "树莓派 ROS 底盘通信整合版"
-git push origin v0.1.0
-```
+## 17. 参考资料
 
-### 10.4 Git 忽略规则
-
-`.gitignore` 已排除 catkin 的 `build/`、`devel/`、`install/`、`log/`，Python 缓存，Keil 的 `OBJ/` 和其他生成文件。不要提交编译产物或设备上的日志；应提交源码、启动文件、参数、接线说明和必要的地图源文件。
-
-## 11. 开发与安全建议
-
-1. 修改底盘协议、车型运动学或电机参数前，先创建 Git 分支并保留可回退标签。
-2. 首次测试必须让驱动轮悬空，确认轮子方向与编码器符号正确后再落地。
-3. 优先在 ROS 层加入 `/cmd_vel` 超时置零和速度限制，并在 STM32 层加入独立通信看门狗。
-4. 不要同时运行多个会启动底盘串口、相机或雷达的 launch 文件。
-5. 使用 `rosbag record` 记录 `/odom`、`/imu`、`/scan`、相机数据和 `/cmd_vel`，便于复现导航与定位问题。
-6. `.gitattributes` 规定源码以 LF 进入版本库；Windows 编辑后出现行尾提示时，先检查实际差异，不要把全量换行变更混入功能提交。
-
-## 12. 参考资料
-
-- [RTAB-Map 安装文档](https://github.com/introlab/rtabmap/wiki/Installation)
-- [RTAB-Map ROS 仓库](https://github.com/introlab/rtabmap_ros)
+- [RTAB-Map](https://github.com/introlab/rtabmap)
+- [rtabmap_ros](https://github.com/introlab/rtabmap_ros)
+- [RTAB-Map 安装说明](https://github.com/introlab/rtabmap/wiki/Installation)
+- [ROS2 Humble 文档](https://docs.ros.org/en/humble/)
+- [Nav2 文档](https://docs.nav2.org/)
 - [项目 Gitee 仓库](https://gitee.com/qbz23/mini_car_project)
