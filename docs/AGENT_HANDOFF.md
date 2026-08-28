@@ -1,19 +1,27 @@
 # Mini ROS2 小车智能体交接文档
 
-更新时间：2026-08-28
+更新时间：2026-08-29
 
 本文面向接手本仓库的开发智能体。目标是让接手者先理解系统边界与当前验证状态，再进行修改，避免重复踩过的设备、ROS1/ROS2、TF 和驱动问题。
 
+> 目标机上按分层顺序做功能验收时，请配合 [目标机验证清单](TARGET_VERIFICATION.md)
+> 使用——它给出每层的命令、预期结果与失败排查。
+
 ## 1. 当前目标
 
-项目正在实现厂房救援场景下的移动机器人原型：
+项目正在实现厂房救援场景下的移动机器人原型，已形成「搜索 → 检测 → 规划 → 逼近」的完整链路：
 
 - STM32 实时控制四轮麦克纳姆底盘。
 - RPLIDAR A1M8 提供 2D 激光扫描。
 - Orbbec Astra Pro 提供 RGB-D。
 - RTAB-Map 在线增量 SLAM，发布 /map 和 map -> odom。
 - Nav2 消费在线地图并发布 /cmd_vel。
-- KCF 用于后续 RGB-D 目标跟踪。
+- twist_mux 仲裁 Nav2 / KCF 跟随 / Web 遥操三路速度指令。
+- Web 救援控制台（FastAPI 网关 + 浏览器页面）：实时地图、遥操、MJPEG 彩色画面。
+- KCF 视觉跟踪：常驻跟随 + 两阶段融合跟随（Nav2 导航 + 视觉伺服）。
+- YOLO 自主目标检测（rescue_perception）：发现画面中的人/物体并输出 map 系位姿。
+- target_fusion 决策层：按置信度分级（自动/待确认/丢弃）+ 稳定性校验。
+- search_coordinator 编排层：目标不在视野时探索未知区域，发现目标即让位。
 
 系统数据流：
 
@@ -28,19 +36,25 @@ Astra Pro Depth -------> /camera/depth/image_raw    |
                                                     |
                                       /map + map -> odom
                                                     |
-                                                    v
-                                                 Nav2
-                                                    |
-                                                 /cmd_vel
-                                                    |
-                                                    v
-                                           wheeltec_robot_node
-                                                    |
-                                         11 字节串口控制帧
-                                                    |
-                                                    v
-                                                  STM32
+                                    +---------------+
+                                    v               v
+                             search_coordinator  Nav2
+                             (探索开关/让位)       |
+                                    |              v
+                                    |        /cmd_vel (仲裁输入, 优先级 10)
+                                    |              |
+                                    |       twist_mux ─> /cmd_vel_muxed ─> wheeltec_robot_node
+                                    |              ^
+                                    |              | /cmd_vel_teleop (Web 遥操, 优先级 100)
+                                    |              | /cmd_vel_kcf (KCF 跟随, 优先级 50)
+                                    |              |
+   detect_target ─> target_fusion ─> FollowTarget ┘
+   (YOLO+深度投影)  (分级+稳定性)    (Nav2+视觉伺服)
 ~~~
+
+（上位机另有 rescue_console 网关，把 /map、/scan、/cmd_vel_teleop、MJPEG
+画面封装成 HTTP/WebSocket 给浏览器，客户端不依赖 ROS。）
+
 
 ## 2. 仓库和分支
 
@@ -53,9 +67,14 @@ Astra Pro Depth -------> /camera/depth/image_raw    |
 
 ~~~text
 F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/
-src/turn_on_wheeltec_robot/
-src/kcf_track/
-docs/
+src/turn_on_wheeltec_robot/     底盘桥接、URDF、RTAB-Map/Nav2 启动配置、twist_mux 配置
+src/kcf_track/                  KCF 跟踪 + 两阶段融合跟随（action 接口与服务器）
+src/rescue_perception/          自主检测、决策融合、搜索编排
+src/astra_camera/               内置第三方 Astra 驱动
+src/astra_camera_msgs/          内置第三方 Astra 消息
+src/rplidar_ros/                内置第三方雷达驱动
+rescue_console/                 Web 救援控制台（FastAPI 网关 + 浏览器页面）
+docs/                           交接文档、第三方说明、目标机验证清单
 ~~~
 
 目标机当前把仓库根目录直接作为 colcon 工作空间：
@@ -124,7 +143,7 @@ docs/
 | RPLIDAR 驱动编译 | 已通过 | 单线程约 3 分 44 秒 |
 | RPLIDAR /scan | 已通过 | Standard 约 7.6 Hz |
 | Astra 深度流 | 已通过 | /camera/depth/image_raw 约 29.5 Hz |
-| Astra 彩色流 | 待复验 | 新 astra_pro.launch.py 尚未取得目标机验证结果 |
+| Astra 彩色流 | 待复验 | 见验证清单第 3 层 |
 | RGB-D 对齐与同步 | 待复验 | 必须检查 RGB、Depth frame_id 和时间戳 |
 | /rtabmap/rgbd_image | 待验证 | 依赖彩色流修复 |
 | /map | 待验证 | 在线整栈尚未验收 |
@@ -132,6 +151,17 @@ docs/
 | Nav2 生命周期 active | 待验证 | controller/planner/bt_navigator |
 | Nav2 目标运动 | 待验证 | 无目标时车辆不动是正常行为 |
 | KCF 运行 | 待验证 | 已迁移代码，未完成实机验收 |
+
+2026-08-29 新增能力的验证状态（代码已全部推送 main，逻辑已验证，**实车待验**）：
+
+| 模块 | 逻辑验证 | 实车验证 |
+| --- | --- | --- |
+| Web 救援控制台（遥测/地图/MJPEG 画面/导航下发） | 已完成 | 待验（验证清单第 7 层） |
+| twist_mux 速度仲裁（优先级/超时降级/急停锁） | 已完成 | 待验（第 6 层） |
+| 两阶段融合跟随（FollowTarget action） | 已完成 | 待验（第 8 层） |
+| YOLO 自主目标检测 + 深度投影 | conda 环境实跑通过 | 待验（第 9 层，**深度单位需实测**） |
+| target_fusion 决策（三级置信度 + 稳定性） | 桩测试通过 | 待验（第 10 层） |
+| search_coordinator 搜索编排（状态机） | 桩测试通过 | 待验（第 11 层） |
 
 ## 5. ROS2 包
 
@@ -158,12 +188,17 @@ src/turn_on_wheeltec_robot/config/nav2_params.yaml
 
 职责：
 
-- 订阅 /camera/color/image_raw 和 /camera/depth/image_raw。
-- KCF 输出目标距离与图像中心。
-- kcf_follow.py 将跟踪结果转为 /cmd_vel。
+- `kcf_node`（C++）：订阅 /camera/color/image_raw 和 /camera/depth/image_raw，
+  输出 kcf/track（`linear.x`=距离，`angular.z`=像素横坐标）。**它不发布速度**。
+- `kcf_follow.py`：常驻跟随，把 kcf/track 转为速度，默认发 `cmd_vel_kcf`。
+- `follow_target_server.py`：两阶段融合跟随 action 服务器（staging 用 Nav2
+  导航 + servo 用视觉伺服环）。
+- `kcf_control.py`：PD 控制律，两种跟随模式共用。
 - 0.5 秒无跟踪数据时发布零速度。
 
-KCF 和 Nav2 都会发布 /cmd_vel，当前没有 twist_mux。不得同时让二者控制底盘。
+三种速度源（Nav2、KCF 跟随、Web 遥操）已由 twist_mux 仲裁，见 5.4 节。
+`kcf_tracking.launch.py` 通过 `follow_mode:=continuous|fusion|none` 选择
+跟随模式——两种跟随模式都会发同一个速度话题，**不可同时启动**。
 
 ### 5.3 内置第三方驱动
 
@@ -181,28 +216,94 @@ src/astra_camera_msgs
 - 临时解压目录必须放到工作空间外。colcon 会递归扫描工作空间，曾因 _vendor 与 src 中同时存在 Astra 包而报重复包。
 - 第三方来源、提交和许可限制见 docs/THIRD_PARTY_NOTICES.md。
 
+### 5.4 速度指令仲裁（twist_mux）
+
+`slam_navigation.launch.py` 默认启用 twist_mux（`use_twist_mux:=false` 可关闭），
+底盘只接收仲裁输出 `/cmd_vel_muxed`。配置见
+`src/turn_on_wheeltec_robot/config/twist_mux.yaml`：
+
+| 源 | 话题 | 优先级 |
+| --- | --- | --- |
+| Nav2（velocity_smoother 输出） | /cmd_vel | 10 |
+| KCF 跟随 | /cmd_vel_kcf | 50 |
+| Web 遥操 | /cmd_vel_teleop | 100 |
+| 急停锁（Bool 置 true 屏蔽全部） | /cmd_vel_estop_lock | 255 |
+
+每路 0.5s 超时，失效自动降级；全部失效输出零速度。**急停锁只是软件层屏蔽，
+不能替代硬件急停**。依赖：`sudo apt install ros-humble-twist-mux`。
+
+Nav2 零改动集成：Humble 的 velocity_smoother 输出就是 /cmd_vel，仲裁器直接
+订阅它；底盘硬编码的 "cmd_vel" 由 base.launch.py 的 `cmd_vel_topic` 参数
+remap 解决，未改 C++。
+
+### 5.5 rescue_perception（自主检测 → 决策 → 搜索编排）
+
+纯 Python 包（ament_python），三个节点：
+
+| 节点 | 职责 | 关键话题 |
+| --- | --- | --- |
+| detect_target | YOLO 检测 + 深度投影 → map 系位姿 | `/rescue/target_pose`、`/detect_target/detections_3d`、`/detect_target/debug_image` |
+| target_fusion | 三级置信度决策 + 稳定性校验，下发 FollowTarget | `/rescue/pending_target`、`/rescue/fusion_state`、`/rescue/confirm` |
+| search_coordinator | 探索与接近的编排状态机 | `/rescue/search_cmd`、`/rescue/search_state`、`/explore/resume` |
+
+要点：
+
+- **检测只做感知不发布速度**，运动始终由 Nav2 独占。
+- 置信度分级：≥`auto_conf_threshold`(0.75) 自动 / ≥`confirm_conf_threshold`(0.40)
+  待确认 / 以下丢弃；`auto_mode:=false` 强制全部人工确认。
+- 稳定性校验：连续 `min_stable_count`(3) 次位置在 `stability_radius`(0.5m)
+  内才认定稳定，抑制闪烁误检。
+- 搜索编排必须自写（无现成实现）：不协调时 explore_lite 与 FollowTarget 会
+  互相抢占 Nav2。状态机 IDLE→SEARCHING→YIELDED→(resume_delay)→SEARCHING。
+- 深度编码：支持 `16UC1`（毫米）/`32FC1`（米），未知编码告警跳过。
+- 依赖 ultralytics（`pip install -r requirements.txt`，会拉入 torch）。
+
+启动入口：`detect_target.launch.py`（仅检测）、`rescue_perception.launch.py`
+（检测+融合）、`rescue_search.launch.py`（探索+编排）。
+
+`explore_lite`（m-explore-ros2）**不内置仓库**，需按 README 第 5.8 节安装。
+
+### 5.6 rescue_console（Web 救援控制台）
+
+小车侧 FastAPI 网关 + 浏览器页面，客户端不依赖 ROS。目录在仓库根 `rescue_console/`：
+
+- `server/app.py`：REST + WebSocket 遥测 + MJPEG 视频流。
+- `server/bridge.py`：RosBridge（rclpy），订阅 /odom /scan /map 等，发布
+  速度到 `/cmd_vel_teleop`（环境变量 `RESCUE_CMD_VEL_TOPIC` 可覆盖）。
+- `web/index.html`：实时地图、激光、轨迹、遥操、MJPEG 画面、导航目标。
+- `deploy/`：可选 systemd 开机自启。
+
+详见 rescue_console/README.md。**若关闭仲裁，必须把网关输出话题改回
+`/cmd_vel`**，否则遥控无效。
+
 ## 6. 启动入口
 
 | 文件 | 用途 | 是否自动启动传感器 |
 | --- | --- | --- |
 | base.launch.py | 仅底盘、URDF、基础 TF | 否 |
 | rplidar_a1.launch.py | A1M8 与 base_footprint -> laser | 雷达 |
-| astra_s.launch.py | Astra S 单设备模式，保留兼容 | 相机 |
+| astra_s.launch.py | Astra S 单设备模式，保留兼容（**本设备是 Astra Pro，勿用**） | 相机 |
 | astra_pro.launch.py | Astra Pro 深度 + UVC 彩色 | 相机 |
 | rtabmap_mapping.launch.py | 只运行 RTAB-Map 建图 | 否 |
 | rtabmap_navigation.launch.py | 已有数据库定位 + Nav2 | 否 |
-| slam_navigation.launch.py | 在线增量 SLAM + Nav2 | 底盘、A1M8、Astra Pro |
-| kcf_tracking.launch.py | KCF 跟踪与底盘 | 底盘，不启动相机 |
+| slam_navigation.launch.py | 在线增量 SLAM + Nav2 + twist_mux 仲裁 | 底盘、A1M8、Astra Pro |
+| kcf_tracking.launch.py | KCF 跟踪（follow_mode:=continuous/fusion/none） | 底盘，不启动相机 |
+| rescue_console | Web 网关（venv 内 uvicorn，非 launch） | 否 |
+| rescue_perception.launch.py | 目标检测 + 融合决策 | 否（复用已启动的相机） |
+| rescue_search.launch.py | explore_lite 探索 + 搜索编排 | 否 |
 
 主入口：
 
 ~~~bash
+# 前提：已 apt install ros-humble-twist-mux（默认启用仲裁，见 5.4 节）
 ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
   model:=mini_mec \
   serial_port:=/dev/wheeltec_controller
 ~~~
 
-这个命令不会自动让车行驶。只有手动 /cmd_vel 或 Nav2 Goal 才会产生运动。
+这个命令不会自动让车行驶。只有手动 /cmd_vel_teleop（Web 控制台）、/cmd_vel
+（Nav2）或 Nav2 Goal 才会产生运动。**关闭仲裁需显式 `use_twist_mux:=false`**，
+此时底盘直接订阅 Nav2 的 /cmd_vel。
 
 如果传感器已单独启动：
 
@@ -226,8 +327,22 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
 | /camera/color/camera_info | sensor_msgs/msg/CameraInfo | 随帧 | astra_camera |
 | /rtabmap/rgbd_image | rtabmap_msgs/msg/RGBDImage | 待验证 | rgbd_sync |
 | /map | nav_msgs/msg/OccupancyGrid | 动态 | RTAB-Map |
-| /cmd_vel_nav | geometry_msgs/msg/Twist | Nav2 控制周期 | controller_server |
-| /cmd_vel | geometry_msgs/msg/Twist | 最终底盘速度 | velocity_smoother 或 KCF |
+| /cmd_vel | geometry_msgs/msg/Twist | Nav2 控制周期 | velocity_smoother（仲裁输入，优先级 10） |
+| /cmd_vel_kcf | geometry_msgs/msg/Twist | 跟随周期 | kcf_follow / follow_target_server（仲裁输入，优先级 50） |
+| /cmd_vel_teleop | geometry_msgs/msg/Twist | 遥操周期 | rescue_console RosBridge（仲裁输入，优先级 100） |
+| /cmd_vel_estop_lock | std_msgs/msg/Bool | 事件 | 急停锁，置 true 屏蔽全部源 |
+| /cmd_vel_muxed | geometry_msgs/msg/Twist | 仲裁周期 | twist_mux（**底盘唯一接收的指令**） |
+| kcf/track | geometry_msgs/msg/Twist | 跟踪周期 | kcf_node（linear.x=距离，angular.z=像素） |
+| /follow_target | kcf_track/action/FollowTarget | 事件 | follow_target_server |
+| /rescue/target_pose | geometry_msgs/msg/PoseStamped | 检测周期 | detect_target |
+| /detect_target/detections_3d | vision_msgs/msg/Detection3DArray | 检测周期 | detect_target |
+| /detect_target/debug_image | sensor_msgs/msg/Image | 检测周期 | detect_target |
+| /rescue/pending_target | geometry_msgs/msg/PoseStamped | 事件 | target_fusion（待人工确认） |
+| /rescue/fusion_state | std_msgs/msg/String | 事件 | target_fusion（idle/pending/following） |
+| /rescue/confirm | std_msgs/msg/Bool | 事件 | 人工确认待确认目标 |
+| /rescue/search_cmd | std_msgs/msg/Bool | 事件 | 外部启停搜索 |
+| /rescue/search_state | std_msgs/msg/String | 1 Hz | search_coordinator（idle/searching/yielded） |
+| /explore/resume | std_msgs/msg/Bool | 1 Hz | search_coordinator 控制 explore_lite |
 
 ## 8. TF 契约
 
@@ -324,9 +439,18 @@ source install/setup.bash
 cd ~/mini_car_ws
 git pull --ff-only
 source /opt/ros/humble/setup.bash
-colcon build --packages-select turn_on_wheeltec_robot kcf_track \
+colcon build --packages-select turn_on_wheeltec_robot kcf_track rescue_perception \
   --symlink-install --parallel-workers 1
 source install/setup.bash
+~~~
+
+新增依赖（首次）：
+
+~~~bash
+sudo apt install -y ros-humble-twist-mux
+pip3 install -r src/rescue_perception/requirements.txt   # ultralytics，会拉入 torch
+python3 -m venv rescue_console/venv
+./rescue_console/venv/bin/pip install -r rescue_console/server/requirements.txt
 ~~~
 
 完整依赖检查：
@@ -349,6 +473,10 @@ colcon build --packages-select rplidar_ros \
 不要在失败构建后立即 source install/setup.bash；先确认对应包显示 Finished。
 
 ## 12. 分层验收顺序
+
+> 详细的命令、预期结果与失败排查见 [目标机验证清单](TARGET_VERIFICATION.md)
+> （第 0–11 层）。本节保留精简要点；清单新增了仲裁、Web 控制台、融合跟随、
+> 检测、融合、搜索六层，本节的 12.6 之后是旧版精简，验收时以清单为准。
 
 ### 12.1 设备
 
@@ -482,16 +610,25 @@ A1M8 不支持 Sensitivity。当前默认 Standard。出现 Can not start scan �
 
 ## 14. 下一步优先级
 
-1. 在目标机拉取最新 main，重新构建 turn_on_wheeltec_robot。
-2. 启动 astra_camera 自带 astra_pro.launch.py，确认彩色流恢复。
-3. 启动项目 astra_pro.launch.py，确认 depth_align 后两个图像 frame_id 与时间戳合理。
-4. 启动 slam_navigation.launch.py，确认 /rtabmap/rgbd_image、/map 和 map -> odom。
-5. 确认 Nav2 生命周期 active，在 RViz2 发送目标并低速测试。
-6. 用卷尺实测 base_footprint 到 laser、camera_link 的外参，替换当前随车默认值。
-7. 录制 rosbag2，覆盖 /odom、/imu、/scan、RGB、Depth、/tf、/tf_static、/cmd_vel、/map。
-8. 增加 twist_mux，解决 Nav2 与 KCF 同时发布 /cmd_vel 的仲裁。
-9. 在 STM32 侧实现独立通信看门狗。
-10. 厂房救援正式测试前增加硬件急停、碰撞条、低电量/失联停车和人工接管。
+已完成（2026-08-29）：twist_mux 仲裁、Web 救援控制台、两阶段融合跟随、
+自主检测、决策融合、搜索编排——代码全部推送 main，逻辑验证通过。
+
+实车验收（按 [目标机验证清单](TARGET_VERIFICATION.md) 分层执行）：
+
+1. 在目标机拉取最新 main，按第 11 节安装新增依赖并重新构建全部包。
+2. 启动 astra_pro.launch.py，确认彩色流恢复、depth_align 后 frame_id 与时间戳合理。
+3. 启动 slam_navigation.launch.py，确认 /rtabmap/rgbd_image、/map 和 map -> odom。
+4. 确认 Nav2 生命周期 active，在 RViz2 发送目标并低速测试。
+5. 验证 twist_mux：优先级切换、超时降级、急停锁（清单第 6 层）。
+6. 验证 Web 控制台：遥测、地图、MJPEG 画面、遥控（第 7 层）。
+7. 验证两阶段融合跟随（第 8 层）；目标丢失停车与两阶段切换。
+8. **实测深度单位与检测精度**（第 3、9 层）——这是开发机无法验证的假设。
+9. 用卷尺实测 base_footprint 到 laser、camera_link 的外参，替换随车默认值。
+10. 验证融合决策（先 auto_mode:=false 验人工确认，第 10 层）与自主搜索（第 11 层）。
+11. 录制 rosbag2，覆盖 /odom、/imu、/scan、RGB、Depth、/tf、/tf_static、
+    /cmd_vel_muxed、/map 及各 /rescue/* 话题。
+12. 在 STM32 侧实现独立通信看门狗。
+13. 厂房救援正式测试前增加硬件急停、碰撞条、低电量/失联停车和人工接管。
 
 ## 15. 诊断信息采集
 
@@ -502,18 +639,30 @@ git status --short --branch
 git log -5 --oneline
 ros2 node list
 ros2 topic list -t
-ros2 topic info -v /cmd_vel
+ros2 topic info -v /cmd_vel_muxed
+ros2 topic info -v /cmd_vel_teleop
 ros2 topic info -v /camera/color/image_raw
 ros2 topic info -v /camera/depth/image_raw
+ros2 action list
+ros2 action send_goal --help 2>/dev/null | head -1   # 检查 follow_target / navigate_to_pose 可用
 ros2 run tf2_tools view_frames
 ls -l /dev/wheeltec_controller /dev/wheeltec_lidar
 lsusb
 ~~~
 
+"遥控/仲裁类"问题额外收集：
+
+~~~bash
+ros2 topic echo --once /rescue/fusion_state
+ros2 topic echo --once /rescue/search_state
+ros2 topic echo --once /cmd_vel_estop_lock
+~~~
+
 频率使用 timeout 分别测量，避免第一个 ros2 topic hz 阻塞后续命令：
 
 ~~~bash
-for topic in /odom /scan /camera/color/image_raw /camera/depth/image_raw /map; do
+for topic in /odom /scan /camera/color/image_raw /camera/depth/image_raw /map \
+             /detect_target/detections_3d /cmd_vel_muxed; do
   echo "===== $topic ====="
   timeout 8 ros2 topic hz "$topic"
 done
