@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rescue_perception</name>
+  <version>0.1.0</version>
+  <description>
+    救援场景目标感知：YOLO 目标检测 + 深度投影，把画面中的人/物体转换为
+    map 系目标位姿，供 Nav2 或两阶段融合跟随（FollowTarget）规划路线。
+  </description>
+
+  <maintainer email="wheeltec@todo.todo">wheeltec</maintainer>
+  <license>Proprietary</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
+  <exec_depend>message_filters</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

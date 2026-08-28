@@ -1,0 +1,8 @@
+# 目标检测依赖（装在目标机，不进 ROS2 的 colcon 构建）
+#
+# 注意：ultralytics 会拉入 torch，体积较大（数百 MB），aarch64 上有官方
+# wheel 但安装较慢。树莓派上如需提速，可改用以下任一方案：
+#   1. 导出 ONNX 模型 + onnxruntime（比 torch 轻很多）
+#   2. Coral TPU / Hailo 加速棒
+#   3. 换用自带 VPU 的相机（如 OAK-D），检测在相机端完成，宿主零负担
+ultralytics>=8.0,<9.0

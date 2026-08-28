@@ -16,6 +16,7 @@
 | 彩色实时画面 | `/camera/color/image_raw` 转 MJPEG 推流（限流 10fps），供救援遥操看路 |
 | 多车型底盘 | 麦克纳姆、全向三轮、阿克曼、两轮差速、四轮驱动，STM32 与 ROS2 `model` 参数对应 |
 | KCF 视觉跟随 | RGB-D 目标跟踪，两种模式：常驻跟随 / 两阶段融合（Nav2 导航 + 视觉伺服） |
+| 自主目标检测 | YOLO 自主发现画面中的人/物体，经深度投影输出 map 系目标位姿，供导航规划 |
 | 速度指令仲裁 | twist_mux 按优先级合并 Nav2、KCF、Web 遥操三路指令，避免争抢底盘 |
 
 ## 2. 运行前置条件
@@ -99,13 +100,16 @@ mini_car/
 │   ├── astra_camera/            Astra Pro 驱动与随车 OpenNI2 二进制库
 │   ├── astra_camera_msgs/       Astra Pro 自定义消息与服务
 │   ├── rplidar_ros/             SLAMTEC RPLIDAR ROS2 驱动
-│   └── kcf_track/               KCF 目标跟踪
-│       ├── action/              FollowTarget.action（两阶段融合跟随接口）
-│       ├── scripts/             kcf_follow.py（常驻跟随）
-│       │                        kcf_control.py（PD 控制律，两种模式共用）
-│       │                        follow_target_server.py（两阶段融合服务器）
-│       ├── src/                 kcf_node（C++ 视觉跟踪，输出 kcf/track）
-│       └── launch/              kcf_tracking.launch.py
+│   ├── kcf_track/               KCF 目标跟踪
+│   │   ├── action/              FollowTarget.action（两阶段融合跟随接口）
+│   │   ├── scripts/             kcf_follow.py（常驻跟随）
+│   │   │                        kcf_control.py（PD 控制律，两种模式共用）
+│   │   │                        follow_target_server.py（两阶段融合服务器）
+│   │   ├── src/                 kcf_node（C++ 视觉跟踪，输出 kcf/track）
+│   │   └── launch/              kcf_tracking.launch.py
+│   └── rescue_perception/       救援目标感知（自主检测，非人工初始化）
+│       ├── rescue_perception/   detect_target.py（YOLO + 深度投影）
+│       └── launch/              detect_target.launch.py
 ├── F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/
 │   ├── USER/                    Keil 工程与程序入口
 │   ├── BALANCE/                 运动学、速度 PI、车型参数
@@ -344,6 +348,79 @@ ros2 action send_goal /follow_target kcf_track/action/FollowTarget \
 ```
 
 目标丢失、超时或被抢占时都会**先停车再返回结果**，错误码见 `FollowTarget.action` 注释。
+
+### 5.7 自主目标检测
+
+> **为什么需要这一层**：KCF 是跟踪器不是检测器，必须先由人框选目标才能跟
+> （见 5.6）。而救援恰恰是**不知道人在哪**才需要机器人去找。本节点让相机
+> 自主发现目标，输出导航可直接消费的 map 系位姿。
+
+先安装依赖（会拉入 torch，体积较大，建议预留时间）：
+
+```bash
+pip3 install -r ~/mini_car_ws/src/rescue_perception/requirements.txt
+```
+
+启动（相机与 SLAM 需已在运行）：
+
+```bash
+ros2 launch rescue_perception detect_target.launch.py \
+  target_classes:=person \
+  conf_threshold:=0.5 \
+  min_interval:=0.5
+```
+
+常用参数：
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `model` | `yolov8n.pt` | YOLO 权重，nano 版在 CPU 上最轻 |
+| `target_classes` | `person` | COCO 类别名，多个用逗号分隔 |
+| `conf_threshold` | `0.5` | 置信度阈值 |
+| `min_interval` | `0.5` | 检测最小间隔（秒），**树莓派上用于限流** |
+| `max_depth` | `8.0` | 有效测距上限（米） |
+| `target_frame` | `map` | 输出位姿所在坐标系 |
+
+输出：
+
+| 话题 | 类型 | 说明 |
+| --- | --- | --- |
+| `/rescue/target_pose` | geometry_msgs/PoseStamped | map 系目标位姿（取置信度最高的目标） |
+| `~/detections_3d` | vision_msgs/Detection3DArray | 全部 3D 检测结果，供 RViz 显示 |
+| `~/debug_image` | sensor_msgs/Image | 画了检测框与测距的图像 |
+
+验证：
+
+```bash
+ros2 topic echo /rescue/target_pose
+ros2 run rqt_image_view rqt_image_view   # 选 /detect_target/debug_image
+```
+
+**本节点只做感知，不发布任何速度指令**——运动始终由 Nav2 独占。
+
+#### 坐标链路与两个前提
+
+1. **深度图必须已对齐到彩色视角**（`astra_pro.launch.py` 的 `depth_align: true`）。
+   未对齐时彩色像素与深度像素不对应，测距会偏；此时节点会按分辨率比例做
+   兜底缩放，但那只是粗略可用。
+2. **TF 链路必须完整**：`map -> odom -> base_footprint -> camera`。
+   RTAB-Map 提供 `map -> odom`，缺失时节点会告警并跳过该帧。
+
+深度单位为毫米（Astra 默认 `16UC1`），节点已按编码自动换算；未知编码会
+告警并跳过，避免把毫米当米用导致测距错 1000 倍。
+
+#### 算力约束
+
+树莓派 CPU 上 YOLOv8n 约**个位数 FPS**，故默认限流到 2Hz。如需提速，按成本
+递增：降输入分辨率 → Coral TPU / Hailo 加速棒 → 换用自带 VPU 的相机（如
+OAK-D，检测在相机端完成，宿主零负担）。
+
+#### 下一步（尚未实装）
+
+当前检测与导航是解耦的——检测到目标后需要人工把 `/rescue/target_pose` 填给
+`FollowTarget` 的 `staging_pose`。后续将补一个融合节点自动完成这一步，并
+在目标不在视野时接入 `m-explore-ros2` 做自主搜索，形成完整的
+「搜索 → 检测 → 规划 → 逼近」链路。
 
 ## 6. 速度指令仲裁
 
@@ -732,6 +809,8 @@ git push origin v2.0.0-ros2
 - Web 控制台桥接层固定依赖 `rclpy`，无法在无 ROS2 环境运行期自检，全部运行时验证需在目标机完成。
 - `twist_mux` 仲裁已实装但**尚未在目标机验证**（需先 `apt install ros-humble-twist-mux`）。
 - 两阶段融合跟随（`FollowTarget`）已实装但**尚未实车验证**：`colcon build` 需生成 action 接口，staging 与伺服两阶段的实际衔接效果待验证。
+- 自主目标检测（`rescue_perception`）已实装但**尚未在目标机运行验证**：开发机无 numpy/cv2/ultralytics 且无法安装，只做了语法与静态引用检查；深度单位（Astra 默认 16UC1 毫米）与检测精度需实测确认。
+- 检测与导航目前**解耦**：需人工把 `/rescue/target_pose` 填给 `FollowTarget` 的 `staging_pose`，自动衔接与自主搜索（`m-explore-ros2`）尚未实装。
 - STM32 侧仍建议增加独立通信看门狗（树莓派死机时 ROS2 无法发零速度）。
 - Web 控制台实时画面当前仅支持 `rgb8`/`bgr8` 未压缩编码；若相机发布 `mjpeg` 等压缩格式需改用 `cv_bridge`。
 - Nav2 参数主要针对 Mini 麦克纳姆底盘，其他车型需要实车调参。
