@@ -36,7 +36,7 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from vision_msgs.msg import Detection3DArray
 
 from kcf_track.action import FollowTarget
@@ -88,6 +88,10 @@ class TargetFusionNode(Node):
         self._pub_pending = self.create_publisher(
             PoseStamped, "/rescue/pending_target", 10
         )
+        # 对外暴露决策状态，供搜索编排节点（search_coordinator）判断是否该
+        # 让位。单一数据源：编排节点不必再自己判断检测置信度，避免两处阈值
+        # 各自漂移。
+        self._pub_state = self.create_publisher(String, "/rescue/fusion_state", 10)
 
         self._nav_client = ActionClient(
             self, FollowTarget, "follow_target", callback_group=self._group
@@ -100,6 +104,7 @@ class TargetFusionNode(Node):
         self._goal_active = False    # 是否已有 FollowTarget 在执行
         self._last_sent_time = 0.0
         self._cooldown = 10.0        # 同一目标下发后的冷却，避免重复触发
+        self._state = "idle"         # idle / pending / following
 
         self.get_logger().info(
             f"融合节点就绪：自动阈值 {self._auto_conf}，"
@@ -137,6 +142,7 @@ class TargetFusionNode(Node):
         else:
             self._pending = pose
             self._pub_pending.publish(pose)
+            self._set_state("pending")
             # 区分两种原因，避免日志误导排障：置信度不足 vs 自动模式关闭
             reason = (
                 "自动模式已关闭（auto_mode=false）"
@@ -147,6 +153,14 @@ class TargetFusionNode(Node):
                 f"目标待确认（{reason}），"
                 f"发布 /rescue/pending_target 等待人工确认"
             )
+
+    def _set_state(self, state):
+        """更新并发布决策状态（仅在变化时发布，避免刷屏）。"""
+        if state == self._state:
+            return
+        self._state = state
+        self._pub_state.publish(String(data=state))
+        self.get_logger().info(f"融合状态 -> {state}")
 
     def _make_pose(self, msg, pos):
         """构造 map 系目标位姿。朝向未知，给单位四元数。"""
@@ -216,6 +230,7 @@ class TargetFusionNode(Node):
 
         self._last_sent_time = now
         self._goal_active = True
+        self._set_state("following")
         self.get_logger().info(
             f"下发跟随目标（{reason}）："
             f"({pose.pose.position.x:.2f}, {pose.pose.position.y:.2f})"
@@ -227,6 +242,8 @@ class TargetFusionNode(Node):
         handle = future.result()
         if handle is None or not handle.accepted:
             self._goal_active = False
+            # 被拒绝则回到空闲，否则编排节点会一直以为有目标而不恢复探索
+            self._set_state("idle")
             self.get_logger().warning("FollowTarget 目标被拒绝。")
             return
         result_future = handle.get_result_async()
@@ -237,6 +254,8 @@ class TargetFusionNode(Node):
         # 目标丢失/超时/取消后清空稳定累计，重新观察
         self._stable_pos = None
         self._stable_count = 0
+        # 回到空闲：搜索编排节点据此恢复探索
+        self._set_state("idle")
         try:
             result = future.result().result
             self.get_logger().info(

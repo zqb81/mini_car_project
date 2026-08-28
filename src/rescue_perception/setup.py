@@ -12,7 +12,10 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch",
          ["launch/detect_target.launch.py",
-          "launch/rescue_perception.launch.py"]),
+          "launch/rescue_perception.launch.py",
+          "launch/rescue_search.launch.py"]),
+        ("share/" + package_name + "/config",
+         ["config/explore_params.yaml"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -24,6 +27,7 @@ setup(
         "console_scripts": [
             "detect_target = rescue_perception.detect_target:main",
             "target_fusion = rescue_perception.target_fusion:main",
+            "search_coordinator = rescue_perception.search_coordinator:main",
         ],
     },
 )

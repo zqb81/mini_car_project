@@ -17,6 +17,7 @@
 | 多车型底盘 | 麦克纳姆、全向三轮、阿克曼、两轮差速、四轮驱动，STM32 与 ROS2 `model` 参数对应 |
 | KCF 视觉跟随 | RGB-D 目标跟踪，两种模式：常驻跟随 / 两阶段融合（Nav2 导航 + 视觉伺服） |
 | 自主目标检测 | YOLO 自主发现画面中的人/物体，经深度投影输出 map 系目标位姿，供导航规划 |
+| 自主搜索 | 目标不在视野时按 frontier 探索未知区域，发现目标即让位给接近动作 |
 | 速度指令仲裁 | twist_mux 按优先级合并 Nav2、KCF、Web 遥操三路指令，避免争抢底盘 |
 
 ## 2. 运行前置条件
@@ -109,7 +110,10 @@ mini_car/
 │   │   └── launch/              kcf_tracking.launch.py
 │   └── rescue_perception/       救援目标感知（自主检测，非人工初始化）
 │       ├── rescue_perception/   detect_target.py（YOLO + 深度投影）
-│       └── launch/              detect_target.launch.py
+│       │                        target_fusion.py（置信度分级 + 稳定性校验）
+│       │                        search_coordinator.py（探索与接近的编排）
+│       ├── config/              explore_params.yaml（frontier 探索参数）
+│       └── launch/              detect_target / rescue_perception / rescue_search
 ├── F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/
 │   ├── USER/                    Keil 工程与程序入口
 │   ├── BALANCE/                 运动学、速度 PI、车型参数
@@ -446,11 +450,62 @@ ros2 topic pub --once /rescue/confirm std_msgs/msg/Bool "{data: true}"
 
 融合节点同样不发布速度指令，只下发 action。
 
-#### 尚未实装：自主搜索
+### 5.8 自主搜索（目标不在视野时）
 
-目标**不在视野内**时的搜索能力（`m-explore-ros2`，按 frontier 探索未知区域）
-尚未接入。当前链路是「视野内检测 → 规划 → 逼近」，完整的
-「搜索 → 检测 → 规划 → 逼近」闭环待补。
+检测只在目标进入相机视野时有效，而救援恰恰不知道人在哪。本节点补上
+「目标不在视野时怎么办」：按 frontier 主动探索未知区域，边建图边搜索；
+一旦发现目标就暂停探索，把底盘控制权让给 `FollowTarget`。
+
+**为什么需要编排层**：`explore_lite` 只管探索、不知道检测的存在；
+`target_fusion` 只管目标决策、不知道探索的存在。若不协调，两路目标会互相
+抢占 Nav2，表现为机器人在「去目标」和「去 frontier」之间反复横跳。
+`search_coordinator` 就是把两者粘起来的编排层：
+
+```text
+/rescue/fusion_state ─> search_coordinator ─> /explore/resume
+     (idle/pending/following)                  (true=探索 / false=暂停)
+```
+
+#### 安装 explore_lite（本仓库不内置）
+
+```bash
+cd ~/mini_car_ws/src
+git clone https://github.com/robo-friends/m-explore-ros2.git
+cd ~/mini_car_ws
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --packages-select explore_lite --symlink-install --parallel-workers 1
+```
+
+启动：
+
+```bash
+ros2 launch rescue_perception rescue_search.launch.py
+```
+
+> **自主搜索会让机器人自行移动，属高风险行为，默认不自动启动。**
+> 确认场地清空、急停可用后再开启：
+>
+> ```bash
+> ros2 topic pub --once /rescue/search_cmd std_msgs/msg/Bool "{data: true}"
+> ```
+>
+> 停止：把 `data` 置 `false`。
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `auto_start` | `false` | 上电即搜索（高风险，务必确认场地清空） |
+| `resume_delay` | `5.0` | 目标结束后延迟多少秒恢复探索，避免启停抖动 |
+| `start_explore` | `true` | 是否启动 `explore_lite`；false 时只启动编排节点 |
+| `enable` | `true` | false 时编排节点忽略一切外部指令 |
+
+状态机：`IDLE`（不发指令）→ `SEARCHING`（探索）→ `YIELDED`（发现目标，让位）
+→ 目标结束并等待 `resume_delay` 后回到 `SEARCHING`。当前状态发布在
+`/rescue/search_state`。
+
+探索开关按 1Hz 持续下发而非只在变化时发一次——`explore_lite` 可能晚于编排
+节点启动，去重会导致它错过初始的暂停指令而上电即探索。
+
+至此「搜索 → 检测 → 规划 → 逼近」完整闭环已打通。
 
 ## 6. 速度指令仲裁
 
@@ -840,7 +895,8 @@ git push origin v2.0.0-ros2
 - `twist_mux` 仲裁已实装但**尚未在目标机验证**（需先 `apt install ros-humble-twist-mux`）。
 - 两阶段融合跟随（`FollowTarget`）已实装但**尚未实车验证**：`colcon build` 需生成 action 接口，staging 与伺服两阶段的实际衔接效果待验证。
 - 自主目标检测（`rescue_perception`）已实装，核心逻辑已在 conda 环境验证（ultralytics API、检测框字段、深度换算/采样/反投影、稳定性与置信度分级，均通过）；但**未在目标机实车验证**——深度单位（Astra 默认 16UC1 毫米）与真实场景检测精度需实测确认。
-- 目标**不在视野内**时的自主搜索（`m-explore-ros2`）尚未接入，当前只支持「视野内检测 → 规划 → 逼近」。
+- 自主搜索（`search_coordinator`）状态机已用 conda 环境验证通过，但**依赖的 `m-explore-ros2` 未内置仓库**，需按 5.8 节自行 clone 构建；实车探索行为（frontier 选择、与接近动作的切换）待验证。
+- 完整链路「搜索 → 检测 → 规划 → 逼近」已打通代码路径，但**每一环都还缺实车验证**：深度单位、检测精度、仲裁生效、两阶段衔接均未实测。
 - STM32 侧仍建议增加独立通信看门狗（树莓派死机时 ROS2 无法发零速度）。
 - Web 控制台实时画面当前仅支持 `rgb8`/`bgr8` 未压缩编码；若相机发布 `mjpeg` 等压缩格式需改用 `cv_bridge`。
 - Nav2 参数主要针对 Mini 麦克纳姆底盘，其他车型需要实车调参。

@@ -1,0 +1,37 @@
+# explore_lite 参数（m-explore-ros2）
+#
+# explore_lite 订阅 /map，找出「已知自由空间」与「未知空间」的交界（frontier），
+# 选一个作为目标调用 Nav2 NavigateToPose。它**从不发布速度指令**，运动始终
+# 由 Nav2 独占，因此不会与本项目其他控制器冲突。
+#
+# 注意：不同 fork 的参数名略有差异，首次使用请以所装版本的
+# explore/config/params.yaml 为准，再把需要的项搬到这里。
+explore:
+  ros__parameters:
+    # 机器人底盘半径（米）。用于判断 frontier 是否可达，
+    # 必须 ≥ 实际外接圆半径，否则会尝试穿越过窄的通道。
+    robot_base_frame: base_footprint
+
+    # frontier 相关阈值
+    # 小于该尺寸的 frontier 视为噪声，不值得专程前往（单位：栅格数）
+    min_frontier_size: 8
+    # 代价地图中判定为「未知」的取值
+    unknown_cost_value: 255
+
+    # 规划失败后是否把该 frontier 标记为不可达并换下一个
+    # （能避免在不可达点反复失败，建议开启）
+    # 部分版本无此参数，若启动告警可删除
+    # allow_unknown: true
+
+    # 目标点判定到达的容差（米/弧度）
+    # goal_aliasing: 0.1
+
+    # 探索耗时上限（秒），0 或负数表示不限时。
+    # 救援任务建议设一个上限，超时后由上层决定是否返航。
+    # exploration_timeout: 0.0
+
+    # 是否在探索结束后返回初始位姿
+    return_to_init: false
+
+    # 是否订阅代价地图而非 /map（本工程由 RTAB-Map 发布 /map，保持默认）
+    use_sim_time: false
