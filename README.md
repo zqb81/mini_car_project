@@ -6,6 +6,10 @@
 
 智能体或新开发者接手前，请先阅读 [智能体交接文档](docs/AGENT_HANDOFF.md)、[仓库工作约束](AGENTS.md) 和 [第三方组件说明](docs/THIRD_PARTY_NOTICES.md)。
 
+> 在目标机上首次部署或验证时，请照 [目标机验证清单](docs/TARGET_VERIFICATION.md)
+> 分层执行——它给出每一层的具体命令、预期结果与失败排查。**不要跳步**，
+> 否则故障难以定位。
+
 ## 1. 核心功能特性
 
 | 能力 | 说明 |
@@ -141,6 +145,9 @@ mini_car/
 同目录下的 `*.launch`（如 `mapping.launch`、`navigation.launch`、`turn_on_wheeltec_robot.launch`）是旧 ROS1 XML launch，仅作迁移对照保留；`CMakeLists.txt` 只安装 `*.launch.py`，它们不会进入 ROS2 安装空间。`send_mark.py`、`imageResize.py` 同理不参与 ROS2 安装。
 
 ## 4. 安装与构建
+
+> 构建完成后，建议照 [目标机验证清单](docs/TARGET_VERIFICATION.md) 分层验收
+> （底盘 → 雷达 → 相机 → SLAM → Nav2 → 各新增能力），不要直接跳到整栈。
 
 **仓库根目录即 colcon 工作空间**（`~/mini_car_ws/src` 为源码目录），因此直接把仓库克隆到 `~/mini_car_ws`：
 
