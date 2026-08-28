@@ -17,6 +17,12 @@ __pycache__/
 # 救援控制台网关：运行期虚拟环境与本地依赖
 rescue_console/venv/
 
+# 模型权重：体积大且属运行期下载物，首次运行时 ultralytics 会自动下载。
+# 离线部署时手动拷贝到目标机，不要入库。
+*.pt
+*.onnx
+*.engine
+
 # 本地智能体记忆目录（非项目源码，不入库）
 .workbuddy/
 
