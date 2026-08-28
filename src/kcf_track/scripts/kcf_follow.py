@@ -6,6 +6,9 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 
+# 控制律与持续跟随逻辑分离，供 follow_target_server.py 复用同一套参数与公式
+from kcf_control import FollowController
+
 
 class KcfFollower(Node):
     """将 KCF 输出的目标距离和像素位置转换为底盘速度。"""
@@ -21,6 +24,10 @@ class KcfFollower(Node):
         self.declare_parameter("max_linear_speed", 0.3)
         self.declare_parameter("max_angular_speed", 0.4)
         self.declare_parameter("tracking_timeout", 0.5)
+        # 速度输出话题。默认不再是全局 /cmd_vel：接入 twist_mux 后跟随只应
+        # 通过仲裁通道下发，避免与 Nav2、Web 遥操直接争抢底盘。
+        # 不接仲裁时可用 -p cmd_vel_topic:=cmd_vel 回到旧行为。
+        self.declare_parameter("cmd_vel_topic", "cmd_vel_kcf")
 
         self.distance_kp = self.get_parameter("distance_kp").value
         self.distance_kd = self.get_parameter("distance_kd").value
@@ -32,48 +39,43 @@ class KcfFollower(Node):
         self.max_angular_speed = self.get_parameter("max_angular_speed").value
         self.tracking_timeout = self.get_parameter("tracking_timeout").value
 
-        self.last_distance_error = 0.0
-        self.last_angle_error = 0.0
+        # 控制律本体（含 PD 参数与限速），与两阶段融合跟随共用
+        self.controller = FollowController(
+            distance_kp=self.distance_kp,
+            distance_kd=self.distance_kd,
+            target_distance=self.target_distance,
+            angle_kp=self.angle_kp,
+            angle_kd=self.angle_kd,
+            target_pixel_x=self.target_pixel_x,
+            max_linear_speed=self.max_linear_speed,
+            max_angular_speed=self.max_angular_speed,
+        )
         self.last_tracking_time = time.monotonic()
         self.stop_sent = True
 
-        self.velocity_publisher = self.create_publisher(Twist, "cmd_vel", 10)
+        self.velocity_publisher = self.create_publisher(
+            Twist, self.get_parameter("cmd_vel_topic").value, 10
+        )
         self.tracking_subscription = self.create_subscription(
             Twist, "kcf/track", self.tracking_callback, 10
         )
         self.watchdog_timer = self.create_timer(0.1, self.check_tracking_timeout)
 
-    @staticmethod
-    def clamp(value, limit):
-        return max(-abs(limit), min(abs(limit), value))
-
     def tracking_callback(self, tracking):
-        distance = tracking.linear.x
-        target_pixel_x = tracking.angular.z
+        linear_speed, angular_speed = self.controller.update(
+            tracking.linear.x, tracking.angular.z
+        )
 
-        if distance <= 0.0 or target_pixel_x <= 0.0:
+        # 观测无效时控制律返回零速度，目标丢失即停车
+        if linear_speed == 0.0 and angular_speed == 0.0:
             self.publish_stop()
             return
 
-        distance_error = self.target_distance - distance
-        angle_error = self.target_pixel_x - target_pixel_x
-
-        linear_speed = (
-            -self.distance_kp * distance_error
-            - self.distance_kd * (distance_error - self.last_distance_error)
-        )
-        angular_speed = (
-            self.angle_kp * angle_error
-            + self.angle_kd * (angle_error - self.last_angle_error)
-        )
-
         command = Twist()
-        command.linear.x = self.clamp(linear_speed, self.max_linear_speed)
-        command.angular.z = self.clamp(angular_speed, self.max_angular_speed)
+        command.linear.x = linear_speed
+        command.angular.z = angular_speed
         self.velocity_publisher.publish(command)
 
-        self.last_distance_error = distance_error
-        self.last_angle_error = angle_error
         self.last_tracking_time = time.monotonic()
         self.stop_sent = False
 

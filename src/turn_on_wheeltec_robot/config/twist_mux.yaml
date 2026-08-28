@@ -1,0 +1,52 @@
+# twist_mux 速度指令仲裁配置
+#
+# 背景：本工程有多个节点会发布速度指令，若同时生效会互相打架：
+#   - Nav2        velocity_smoother 输出（Humble 默认重映射到 /cmd_vel）
+#   - KCF 跟随    kcf_follow.py
+#   - Web 遥操    rescue_console 的 RosBridge
+# 底盘只应接收唯一一路指令，因此由 twist_mux 按优先级仲裁后再下发。
+#
+# 仲裁规则（twist_mux 标准语义）：
+#   priority  数值越大优先级越高（0~255），同一时刻只有最高优先级的
+#             “活跃”源会被转发。
+#   timeout   该话题超过指定秒数没有新消息即视为失效，自动降级到下一个
+#             优先级源；所有源都失效时输出零速度。这是重要的安全兜底：
+#             发布方节点崩溃或卡死时底盘会自动停车。
+#   locks     收到 true 时屏蔽所有优先级低于锁优先级的源，用于急停。
+#
+# 链路：
+#   Nav2    /cmd_vel        ┐
+#   KCF     /cmd_vel_kcf    ├─> twist_mux ─> /cmd_vel_muxed ─> 底盘
+#   Web     /cmd_vel_teleop ┘
+twist_mux:
+  ros__parameters:
+    topics:
+      # 导航：优先级最低。人工接管与视觉跟随都可以随时压过它。
+      # 话题取 Nav2 的实际输出，无需改动 Nav2 配置。
+      navigation:
+        topic: /cmd_vel
+        timeout: 0.5
+        priority: 10
+
+      # KCF 视觉跟随：仅在跟踪到目标时持续发布，目标丢失后 0.5s 自动
+      # 交还控制权给导航。
+      kcf_follow:
+        topic: /cmd_vel_kcf
+        timeout: 0.5
+        priority: 50
+
+      # Web 遥操：人工操作优先级高于自主行为（人工接管优先）。
+      # 控制台自身有 0.5s 看门狗，这里是第二层保护。
+      teleop:
+        topic: /cmd_vel_teleop
+        timeout: 0.5
+        priority: 100
+
+    locks:
+      # 硬件急停锁：置 true 时屏蔽上述全部源（优先级均低于 255）。
+      # timeout: 0.0 表示锁状态持续生效，直到显式置 false。
+      # 注意：这只是软件层屏蔽，不能替代硬件急停开关。
+      estop:
+        topic: /cmd_vel_estop_lock
+        priority: 255
+        timeout: 0.0

@@ -131,16 +131,25 @@ sudo systemctl edit rescue-console     # 修改 RESCUE_LASER_YAW_OFFSET 等环�
 
 1. `slam_navigation.launch.py` 已在运行（底盘 + 雷达 + 相机 + RTAB-Map + Nav2）。
 2. Nav2 三个生命周期节点为 active（controller/planner/bt_navigator）。
-3. `/cmd_vel` 由本网关与 Nav2 共用——**当前无 twist_mux 仲裁**，手动遥控
-   与自动导航不要同时进行（网关在收到手动指令时会先取消 Nav2 目标，但
-   不能替代仲裁器；正式使用前应部署 twist_mux）。
+3. `slam_navigation.launch.py` 默认启用 `twist_mux` 仲裁，底盘只接收
+   `/cmd_vel_muxed`。因此本网关**默认发布 `/cmd_vel_teleop`**（而非直发
+   `/cmd_vel`）。若关闭了仲裁（`use_twist_mux:=false`），必须把网关的输出
+   改回 `/cmd_vel`，否则遥控无效：
+
+   ```bash
+   RESCUE_CMD_VEL_TOPIC=/cmd_vel ./../../venv/bin/python -m uvicorn app:app ...
+   ```
+
+   `/api/status` 的 `cmd_vel_topic` 字段会返回当前实际发布话题，可用于
+   排查“发了指令但小车不动”。
 4. 激光安装朝向偏移默认 π（随车默认值，README 16.2），可用环境变量
    `RESCUE_LASER_YAW_OFFSET` 覆盖，**实车地图与激光方向不一致时首先核对它**。
 
 RosBridge 数据通路（与 docs/AGENT_HANDOFF.md 第 7 节话题契约一致）：
 订阅 `/odom` `/PowerVoltage` `/chassis_enabled` `/scan` `/map`（transient_local
-QoS，兼容 latched 地图）与 TF；发布 `/cmd_vel`；导航目标走 Nav2
-`NavigateToPose` action，支持到达/失败/取消结果回传。
+QoS，兼容 latched 地图）与 TF；发布速度指令（默认 `/cmd_vel_teleop`，由
+`twist_mux` 按优先级 100 仲裁，高于 Nav2 的 10 与 KCF 跟随的 50）；
+导航目标走 Nav2 `NavigateToPose` action，支持到达/失败/取消结果回传。
 
 ### 5.4 开发机与目标机的兼容性差异
 
@@ -165,7 +174,9 @@ QoS，兼容 latched 地图）与 TF；发布 `/cmd_vel`；导航目标走 Nav2
   （网关与 wheeltec_robot_node 双层看门狗）。
 - 任何手动输入会取消自动导航（人工接管优先）。
 - **接实车前必须车轮悬空或场地清空**，且确认硬件急停可用。
-- KCF 与 Nav2 与本客户端三方都发布 /cmd_vel，接实车前必须加 twist_mux 仲裁。
+- 本网关、Nav2、KCF 三方速度指令由 `twist_mux` 仲裁（遥操 100 > 跟随 50 >
+  导航 10）；关闭仲裁时不得让任意两路同时下发。`twist_mux` 只是软件层仲裁，
+  不能替代硬件急停。
 - 服务绑定 0.0.0.0 且无鉴权，仅限可信局域网使用；跨网段暴露需自加反向代理与认证。
 - 实时画面仅支持 rgb8 / bgr8 未压缩编码（Pillow 解码）。若相机发布 mjpeg
   等压缩格式，页面会显示明确的编码错误，此时改用 cv_bridge：

@@ -64,6 +64,12 @@ def launch_setup(context):
                     ),
                 },
             ],
+            # 底盘节点内部硬编码订阅 "cmd_vel"。接入 twist_mux 后底盘只应接收
+            # 仲裁输出，因此在这里做话题重映射，避免修改 C++ 逻辑。
+            # 默认保持 "cmd_vel"，行为与接入仲裁前完全一致。
+            remappings=[
+                ("cmd_vel", LaunchConfiguration("cmd_vel_topic")),
+            ],
         ),
         # IMU 安装位姿当前为默认值，实车安装位置或朝向变化时必须同步标定此静态变换。
         Node(
@@ -132,6 +138,10 @@ def generate_launch_description():
             DeclareLaunchArgument("imu_frame", default_value="imu_link"),
             DeclareLaunchArgument("publish_odom_tf", default_value="true"),
             DeclareLaunchArgument("cmd_vel_timeout", default_value="0.5"),
+            # 底盘接收速度指令的话题。单独运行底盘时保持默认 "cmd_vel"；
+            # 接入 twist_mux 后由上层传入仲裁输出话题（如 /cmd_vel_muxed），
+            # 使底盘只接受唯一一路经过仲裁的指令。
+            DeclareLaunchArgument("cmd_vel_topic", default_value="cmd_vel"),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument("publish_camera_tf", default_value="true"),
             DeclareLaunchArgument("camera_frame", default_value="camera_link"),

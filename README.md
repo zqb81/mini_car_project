@@ -15,7 +15,8 @@
 | Web 救援控制台 | FastAPI 网关 + 浏览器页面：实时地图、激光扫描、行驶轨迹、手动遥操、MJPEG 实时画面 |
 | 彩色实时画面 | `/camera/color/image_raw` 转 MJPEG 推流（限流 10fps），供救援遥操看路 |
 | 多车型底盘 | 麦克纳姆、全向三轮、阿克曼、两轮差速、四轮驱动，STM32 与 ROS2 `model` 参数对应 |
-| 视觉跟随 | KCF RGB-D 目标跟踪，支持 ROI 指定与跟踪超时停车 |
+| KCF 视觉跟随 | RGB-D 目标跟踪，两种模式：常驻跟随 / 两阶段融合（Nav2 导航 + 视觉伺服） |
+| 速度指令仲裁 | twist_mux 按优先级合并 Nav2、KCF、Web 遥操三路指令，避免争抢底盘 |
 
 ## 2. 运行前置条件
 
@@ -98,7 +99,13 @@ mini_car/
 │   ├── astra_camera/            Astra Pro 驱动与随车 OpenNI2 二进制库
 │   ├── astra_camera_msgs/       Astra Pro 自定义消息与服务
 │   ├── rplidar_ros/             SLAMTEC RPLIDAR ROS2 驱动
-│   └── kcf_track/               KCF 目标跟踪（launch / scripts / src）
+│   └── kcf_track/               KCF 目标跟踪
+│       ├── action/              FollowTarget.action（两阶段融合跟随接口）
+│       ├── scripts/             kcf_follow.py（常驻跟随）
+│       │                        kcf_control.py（PD 控制律，两种模式共用）
+│       │                        follow_target_server.py（两阶段融合服务器）
+│       ├── src/                 kcf_node（C++ 视觉跟踪，输出 kcf/track）
+│       └── launch/              kcf_tracking.launch.py
 ├── F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/
 │   ├── USER/                    Keil 工程与程序入口
 │   ├── BALANCE/                 运动学、速度 PI、车型参数
@@ -300,9 +307,71 @@ ros2 run kcf_track kcf_node --ros-args \
   -p initial_roi.height:=160
 ```
 
-KCF 与 Nav2 都会发布 `/cmd_vel`，**不能直接同时控制底盘**。并行运行需部署 `twist_mux` 并制定优先级。
+#### 两种跟随模式（互斥，不可同时启动）
 
-## 6. 系统架构
+`kcf_tracking.launch.py` 通过 `follow_mode` 选择，两种模式都会向 `cmd_vel_topic` 下发指令，同时运行会互相打架：
+
+| follow_mode | 行为 | 适用场景 |
+| --- | --- | --- |
+| `continuous`（默认） | `kcf_follower` 常驻，一有目标就驱动底盘 | 简单跟随，目标始终在视野内 |
+| `fusion` | 只启动 `follow_target` 动作服务器，由调用方下发目标触发 | 目标尚远或需要避障 |
+| `none` | 只跟踪并发布 `kcf/track`，不驱动底盘 | 上层自行消费跟踪结果 |
+
+**两阶段融合模式**（参考 OpenNav Docking 的分阶段思路）：
+
+```bash
+ros2 launch kcf_track kcf_tracking.launch.py \
+  follow_mode:=fusion \
+  rgb_topic:=/camera/color/image_raw \
+  depth_topic:=/camera/depth/image_raw
+```
+
+调用 `follow_target` action 后分两阶段执行：
+
+1. **staging**：用 Nav2 `NavigateToPose` 走到目标大致位置，这段路享有完整避障；
+2. **servo**：进入视觉伺服环，KCF 持续给出目标距离与像素位置，由 PD 控制器逼近并保持距离。
+
+任一时刻只有一个控制器活跃，因此不会与导航争抢 `/cmd_vel`。命令示例：
+
+```bash
+ros2 action send_goal /follow_target kcf_track/action/FollowTarget \
+  "{use_staging_pose: true,
+    staging_pose: {header: {frame_id: map},
+                   pose: {position: {x: 2.0, y: 1.0, z: 0.0},
+                          orientation: {w: 1.0}}},
+    target_distance: 1.2,
+    servo_timeout: 60.0}"
+```
+
+目标丢失、超时或被抢占时都会**先停车再返回结果**，错误码见 `FollowTarget.action` 注释。
+
+## 6. 速度指令仲裁
+
+Nav2、KCF 跟随、Web 遥操都会下发速度指令，未经仲裁会互相打架。`slam_navigation.launch.py` 默认启用 `twist_mux` 仲裁：
+
+```text
+Nav2        /cmd_vel         ┐
+KCF 跟随    /cmd_vel_kcf     ├─> twist_mux ─> /cmd_vel_muxed ─> 底盘
+Web 遥操    /cmd_vel_teleop  ┘
+```
+
+优先级（`config/twist_mux.yaml`）：Web 遥操 100 > KCF 跟随 50 > Nav2 10，另有一路 `255` 的急停锁。每个源独立 `timeout`，超时未收到消息即视为失效并自动降级；全部失效时输出零速度——**发布方节点崩溃时底盘会自动停车**。
+
+首次运行需安装：
+
+```bash
+sudo apt install ros-humble-twist-mux
+```
+
+关闭仲裁（回退到旧行为，底盘直接监听 Nav2 的 `/cmd_vel`）：
+
+```bash
+ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py use_twist_mux:=false
+```
+
+> 急停锁只是软件层屏蔽，不能替代硬件急停开关。
+
+## 7. 系统架构
 
 ```text
 RGB-D 相机 --------> RTAB-Map / KCF
@@ -337,7 +406,7 @@ Nav2 / KCF ----------> /cmd_vel
 | Web 救援控制台 | 把 ROS2 话题封装为 HTTP/WebSocket/MJPEG，客户端零 ROS 依赖 |
 | STM32 | 车型运动学、四路轮速 PI、编码器与 IMU 采集、电机 PWM |
 
-## 7. ROS2 迁移说明
+## 8. ROS2 迁移说明
 
 底盘桥接已从 roscpp/catkin 迁移为 rclcpp/ament：
 
@@ -361,9 +430,9 @@ Nav2 / KCF ----------> /cmd_vel
 
 KCF 节点已迁移为 rclcpp，跟随节点已迁移为 Python 3 + rclpy，支持 32FC1/16UC1 深度图、ROI 边界检查和跟踪超时停车。
 
-## 8. STM32 固件
+## 9. STM32 固件
 
-### 8.1 基本信息
+### 9.1 基本信息
 
 - MCU：STM32F103VET6
 - 主频：72 MHz
@@ -378,7 +447,7 @@ Keil 工程：
 F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/USER/WHEELTEC.uvprojx
 ```
 
-### 8.2 车型对应
+### 9.2 车型对应
 
 | STM32 枚举 | ROS2 model | 车型 |
 | --- | --- | --- |
@@ -390,17 +459,17 @@ F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/USER/WHEELTEC.uvproj
 
 STM32 电位器档位必须与 ROS2 的 `model` 参数一致。
 
-### 8.3 安全提示
+### 9.3 安全提示
 
 STM32 原固件没有通信超时停车机制。ROS2 桥接已增加上位机看门狗，但**仍建议在 STM32 侧增加独立通信看门狗**——树莓派死机时 ROS2 无法继续发送零速度。
 
-## 9. 串口协议
+## 10. 串口协议
 
 > STM32 通信协议保持不变，因此已烧录的霍尔编码器版固件可以继续使用。
 
 默认设备 `/dev/wheeltec_controller`，115200 bit/s，8N1，对应 STM32 USART3。
 
-### 9.1 ROS2 到 STM32
+### 10.1 ROS2 到 STM32
 
 总长 11 字节：
 
@@ -414,7 +483,7 @@ STM32 原固件没有通信超时停车机制。ROS2 桥接已增加上位机看
 | 9 | 字节 0 至 8 的 XOR |
 | 10 | 帧尾 0x7D |
 
-### 9.2 STM32 到 ROS2
+### 10.2 STM32 到 ROS2
 
 总长 24 字节：
 
@@ -429,11 +498,17 @@ STM32 原固件没有通信超时停车机制。ROS2 桥接已增加上位机看
 | 22 | 字节 0 至 21 的 XOR |
 | 23 | 帧尾 0x7D |
 
-## 10. ROS2 话题与 TF
+## 11. ROS2 话题与 TF
 
 | 名称 | 类型 | 方向 |
 | --- | --- | --- |
-| `/cmd_vel` | geometry_msgs/msg/Twist | Nav2/KCF -> 底盘 |
+| `/cmd_vel` | geometry_msgs/msg/Twist | Nav2 -> twist_mux（仲裁输入，优先级 10） |
+| `/cmd_vel_kcf` | geometry_msgs/msg/Twist | KCF 跟随 -> twist_mux（优先级 50） |
+| `/cmd_vel_teleop` | geometry_msgs/msg/Twist | Web 网关 -> twist_mux（优先级 100） |
+| `/cmd_vel_muxed` | geometry_msgs/msg/Twist | twist_mux -> 底盘（唯一发给底盘的指令） |
+| `/cmd_vel_estop_lock` | std_msgs/msg/Bool | 急停锁，置 true 屏蔽全部速度源 |
+| `/follow_target` | kcf_track/action/FollowTarget | 两阶段融合跟随动作 |
+| `/kcf/track` | geometry_msgs/msg/Twist | KCF 跟踪输出：`linear.x`=距离、`angular.z`=像素横坐标 |
 | `/odom` | nav_msgs/msg/Odometry | 底盘 -> ROS2 |
 | `/imu` | sensor_msgs/msg/Imu | 底盘 -> ROS2 |
 | `/PowerVoltage` | std_msgs/msg/Float32 | 底盘 -> ROS2 |
@@ -457,7 +532,7 @@ map                 RTAB-Map 发布
 
 RTAB-Map 发布 `map -> odom`，底盘节点发布 `odom -> base_footprint`。**不要启动第二个发布相同 TF 的节点。**
 
-### 10.1 深度相机在建图中的角色
+### 11.1 深度相机在建图中的角色
 
 `slam_navigation.launch.py` 中 RTAB-Map 同时订阅 RGB-D 与激光（`subscribe_rgbd: true`、`subscribe_scan: true`）：
 
@@ -466,7 +541,7 @@ RTAB-Map 发布 `map -> odom`，底盘节点发布 `odom -> base_footprint`。**
 
 两者都在参与 SLAM，只是分工不同。厂房为平面环境、Nav2 为 2D 导航，因此 2D 栅格由激光生成，比深度图投影更稳定。
 
-## 11. Astra Pro 深度相机驱动
+## 12. Astra Pro 深度相机驱动
 
 Astra Pro 驱动已作为随车资料源码纳入仓库，目标机拉取仓库后应已有：
 
@@ -492,7 +567,7 @@ ros2 topic echo --once /camera/color/camera_info
 
 若相机已在其他终端启动，运行 SLAM 时必须禁止重复启动（见 5.2）。
 
-## 12. udev 串口配置
+## 13. udev 串口配置
 
 先确定实际设备：
 
@@ -518,7 +593,7 @@ src/turn_on_wheeltec_robot/scripts/wheeltec_udev.sh
 ros2 launch turn_on_wheeltec_robot base.launch.py serial_port:=/dev/ttyUSB0
 ```
 
-## 13. RPLIDAR A1M8 接入
+## 14. RPLIDAR A1M8 接入
 
 A1M8 是 2D 激光雷达，115200 bit/s 串口，通过 `/dev/wheeltec_lidar` 接入。固件支持 Standard、Express、Boost、Stability，工程默认使用兼容性最高的 Standard。
 
@@ -538,9 +613,9 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
 
 若 Web 控制台显示的激光方向与地图不一致，**首先核对 `laser_yaw`**（网关侧可用环境变量 `RESCUE_LASER_YAW_OFFSET` 覆盖）。
 
-## 14. 救援场景传感器建议
+## 15. 救援场景传感器建议
 
-### 14.1 基础闭环
+### 15.1 基础闭环
 
 | 传感器 | 作用 | 当前工程状态 |
 | --- | --- | --- |
@@ -549,7 +624,7 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
 | 2D 激光雷达 | 平面避障和激光 SLAM | A1M8，`/scan`，驱动已内置 |
 | RGB-D 相机 | 视觉回环、深度障碍和目标跟踪 | Astra Pro，launch 已接入 |
 
-### 14.2 厂房救援推荐加固
+### 15.2 厂房救援推荐加固
 
 普通 RGB-D 相机不应作为救援环境唯一的定位或避障传感器。烟尘、黑暗、强逆光、反光金属、热源和水雾都会使深度图或视觉特征退化。建议按预算增加：
 
@@ -562,13 +637,13 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
 
 如果只能增加一种定位相关传感器，优先选择带 IMU 的 3D 激光雷达；如果任务重点是找人，增加热成像相机和气体传感器，但仍保留激光雷达作为避障主传感器。
 
-### 14.3 救援系统安全边界
+### 15.3 救援系统安全边界
 
 该系统适合人在回路的实验和辅助侦察，不应直接视为消防或生命安全认证设备。必须提供人工接管、急停、失联停车、低电量停车、传感器失效降级和通信日志；正式部署前应在烟雾、弱光、反光、狭窄通道和动态障碍物条件下做分级测试。
 
-## 15. 常见问题
+## 16. 常见问题
 
-### 15.1 串口打不开
+### 16.1 串口打不开
 
 ```bash
 ls -l /dev/wheeltec_controller
@@ -578,14 +653,14 @@ sudo usermod -aG dialout $USER
 
 加入 `dialout` 后需重新登录。**不要使用 `sudo ros2 launch` 绕过设备权限。**
 
-### 15.2 有 /cmd_vel 但小车不动
+### 16.2 有 /cmd_vel 但小车不动
 
 - 等待 STM32 完成约 10 秒 IMU 校准。
 - 检查电池是否高于 10 V。
 - 检查硬件使能开关与 `/chassis_enabled`。
 - 检查 ROS2 `model` 与 STM32 电位器档位。
 
-### 15.3 RTAB-Map 没有输出 /map
+### 16.3 RTAB-Map 没有输出 /map
 
 ```bash
 ros2 topic hz /camera/color/image_raw
@@ -598,7 +673,7 @@ ros2 run tf2_tools view_frames
 
 RGB、深度和相机内参时间戳无法同步时，`rgbd_sync` 不会输出有效数据。
 
-### 15.4 Nav2 报 map 或 TF 超时
+### 16.4 Nav2 报 map 或 TF 超时
 
 检查 `map -> odom -> base_footprint -> camera_link` 是否完整。若相机驱动已经发布 base 到 camera 的 TF，可关闭本工程的相机静态 TF：
 
@@ -606,7 +681,7 @@ RGB、深度和相机内参时间戳无法同步时，`rgbd_sync` 不会输出�
 publish_camera_tf:=false
 ```
 
-### 15.5 编译失败
+### 16.5 编译失败
 
 ```bash
 cd ~/mini_car_ws
@@ -617,13 +692,13 @@ colcon build --symlink-install --event-handlers console_direct+
 
 常见原因是相机第三方库（magic_enum、libuvc）未安装，见第 2.3 节。
 
-### 15.6 Web 控制台页面空白或无画面
+### 16.6 Web 控制台页面空白或无画面
 
 - 服务未起来：确认启动时已 `source` ROS2 与工作空间，缺 `rclpy` 会直接报错退出。
 - 画面黑屏：查 `http://<目标机IP>:8000/api/status` 的 `video` 字段，`error` 会说明是相机未启动还是图像编码不支持（当前支持 `rgb8`/`bgr8`）。
 - 地图空白：确认 RTAB-Map 已在发布 `/map`。
 
-## 16. Git 工作流
+## 17. Git 工作流
 
 稳定分支为 `main`，远程使用 SSH：
 
@@ -651,18 +726,19 @@ git push origin v2.0.0-ros2
 
 `astra_camera`、`astra_camera_msgs`、`rplidar_ros` 是仓库内置的第三方源码，升级时应记录上游仓库、分支/提交和许可变化，**不得删除其 LICENSE 文件**。
 
-## 17. 当前限制
+## 18. 当前限制
 
 - 开发机（Windows）无 ROS2 Humble，只能做静态语法与结构验证；`colcon build` 与实车行为必须在 Ubuntu 22.04 / Humble 上验证。
 - Web 控制台桥接层固定依赖 `rclpy`，无法在无 ROS2 环境运行期自检，全部运行时验证需在目标机完成。
-- `/cmd_vel` 由 Web 网关、Nav2、KCF 三方发布，**当前没有部署 twist_mux 仲裁**；接实车前必须补上。
+- `twist_mux` 仲裁已实装但**尚未在目标机验证**（需先 `apt install ros-humble-twist-mux`）。
+- 两阶段融合跟随（`FollowTarget`）已实装但**尚未实车验证**：`colcon build` 需生成 action 接口，staging 与伺服两阶段的实际衔接效果待验证。
 - STM32 侧仍建议增加独立通信看门狗（树莓派死机时 ROS2 无法发零速度）。
 - Web 控制台实时画面当前仅支持 `rgb8`/`bgr8` 未压缩编码；若相机发布 `mjpeg` 等压缩格式需改用 `cv_bridge`。
 - Nav2 参数主要针对 Mini 麦克纳姆底盘，其他车型需要实车调参。
 - ROS1 多点导航脚本没有迁移，不参与 ROS2 安装。
 - 视频回传目前只有彩色画面，深度图伪彩未实现。
 
-## 18. 参考资料
+## 19. 参考资料
 
 - [RTAB-Map](https://github.com/introlab/rtabmap)
 - [rtabmap_ros](https://github.com/introlab/rtabmap_ros)

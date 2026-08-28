@@ -197,7 +197,13 @@ class RosBridge(BaseBridge):
         node.create_subscription(Image, _VIDEO_TOPIC, self._cb_image,
                                  qos_profile_sensor_data)
 
-        self._pub_cmd = node.create_publisher(Twist, "/cmd_vel", 10)
+        # 速度输出话题默认不是全局 /cmd_vel：接入 twist_mux 后遥操应走独立的
+        # /cmd_vel_teleop 由仲裁器按优先级合并，避免与 Nav2、KCF 直抢底盘。
+        # 未部署仲裁器时用 RESCUE_CMD_VEL_TOPIC=/cmd_vel 回到旧行为。
+        self.cmd_vel_topic = os.environ.get(
+            "RESCUE_CMD_VEL_TOPIC", "/cmd_vel_teleop"
+        )
+        self._pub_cmd = node.create_publisher(Twist, self.cmd_vel_topic, 10)
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, node)
         self._nav_client = ActionClient(node, NavigateToPose,

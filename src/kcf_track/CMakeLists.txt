@@ -14,6 +14,15 @@ find_package(OpenCV REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
+# 两阶段融合跟随（follow_target）的动作接口。动作定义放本包内，
+# 因为它是 KCF 跟随能力的对外契约，不通用到需要单独建 msg 包。
+find_package(rosidl_default_generators REQUIRED)
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/FollowTarget.action"
+  DEPENDENCIES geometry_msgs
+)
+ament_export_dependencies(rosidl_default_runtime)
+
 add_executable(kcf_node
   src/fhog.cpp
   src/kcftracker.cpp
@@ -31,7 +40,11 @@ target_link_libraries(kcf_node ${OpenCV_LIBRARIES})
 install(TARGETS kcf_node
   DESTINATION lib/${PROJECT_NAME}
 )
-install(PROGRAMS scripts/kcf_follow.py
+# kcf_control.py 是被另两个脚本 import 的控制律模块，必须与它们同目录
+install(PROGRAMS
+  scripts/kcf_follow.py
+  scripts/kcf_control.py
+  scripts/follow_target_server.py
   DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY launch/

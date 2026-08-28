@@ -129,6 +129,9 @@ async def status() -> dict:
         "uptime_s": round(time.time() - _started_at, 1),
         "note": "ROS2 桥接（真实话题）",
         "video": bridge.video_status(),
+        # 遥操指令的实际发布话题，用于排查“发了指令但小车不动”：
+        # 部署 twist_mux 后底盘只接收仲裁输出，直连 /cmd_vel 会失效。
+        "cmd_vel_topic": getattr(bridge, "cmd_vel_topic", "/cmd_vel"),
     }
 
 

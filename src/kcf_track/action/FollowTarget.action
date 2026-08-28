@@ -1,0 +1,49 @@
+# 两阶段融合跟随：先用 Nav2 导航到目标附近的 staging pose，再进入视觉伺服环，
+# 由 KCF 持续精化目标位姿并驱动底盘接近。
+#
+# 设计要点（参考 OpenNav Docking 的分阶段思路）：
+#   任一时刻只有一个控制器活跃——staging 阶段是 Nav2，伺服阶段是视觉伺服环。
+#   因此不会与导航争抢 /cmd_vel，无需依赖仲裁器兜底。
+#
+# 典型调用方式：
+#   1) 目标尚远：use_staging_pose=true 并给出大致位姿，先由 Nav2 走过去；
+#   2) 目标已在视野内：use_staging_pose=false，直接进入视觉伺服。
+
+# ---------------- 请求 ----------------
+# 是否先用 Nav2 导航到 staging pose。false 时直接进入视觉伺服，
+# 适用于目标已在相机视野内的近距离场景。
+bool use_staging_pose
+
+# staging pose（frame_id 应为 map）。仅当 use_staging_pose 为 true 时使用；
+# 它是“目标大致所在位置”，不要求精确——精确位姿由视觉伺服环精化。
+geometry_msgs/PoseStamped staging_pose
+
+# 期望与目标保持的距离（米）。0 表示沿用服务端默认参数。
+float32 target_distance
+
+# 视觉伺服阶段的时长上限（秒）。0 表示不限时，直到被取消或目标丢失。
+float64 servo_timeout
+---
+# ---------------- 结果 ----------------
+bool success
+
+# 0 无错误
+# 1 NAV2_UNAVAILABLE  Nav2 动作服务不可用
+# 2 STAGING_FAILED    导航到 staging pose 失败
+# 3 TARGET_LOST       伺服期间丢失目标（超过 tracking_timeout 未收到有效观测）
+# 4 TIMEOUT           达到 servo_timeout
+# 5 CANCELED          被新目标抢占或主动取消
+int16 error_code
+
+# 结束时的目标距离（米）。未获得过有效观测时为 -1。
+float32 final_distance
+---
+# ---------------- 反馈 ----------------
+# 0 待命 / 1 导航至 staging / 2 视觉伺服 / 3 结束
+int8 phase
+
+# 当前目标距离（米）。未获得有效观测时为 -1。
+float32 current_distance
+
+# 自进入伺服阶段起的累计时长（秒）
+float64 elapsed_time

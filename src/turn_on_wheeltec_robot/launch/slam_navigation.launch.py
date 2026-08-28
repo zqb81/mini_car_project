@@ -7,7 +7,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -75,6 +75,20 @@ def generate_launch_description():
             DeclareLaunchArgument("laser_pitch", default_value="0.0"),
             DeclareLaunchArgument("laser_yaw", default_value="3.14159"),
             DeclareLaunchArgument("lidar_scan_mode", default_value="Standard"),
+            # ---- 速度指令仲裁 ----
+            # 底盘、Nav2、KCF、Web 网关都可能下发速度，未经仲裁会互相打架。
+            # 启用后底盘只接收 twist_mux 的输出；关闭则回退为底盘直接监听
+            # Nav2 的 /cmd_vel（接入仲裁前的旧行为）。
+            DeclareLaunchArgument("use_twist_mux", default_value="true"),
+            DeclareLaunchArgument(
+                "cmd_vel_mux_topic", default_value="/cmd_vel_muxed"
+            ),
+            DeclareLaunchArgument(
+                "twist_mux_config",
+                default_value=os.path.join(
+                    package_share, "config", "twist_mux.yaml"
+                ),
+            ),
             IncludeLaunchDescription(
                 base_launch,
                 condition=IfCondition(LaunchConfiguration("start_base")),
@@ -86,7 +100,32 @@ def generate_launch_description():
                     "publish_camera_tf": LaunchConfiguration("publish_camera_tf"),
                     "camera_frame": LaunchConfiguration("camera_frame"),
                     "use_sim_time": use_sim_time,
+                    # 启用仲裁时底盘订阅仲裁输出，否则仍订阅 Nav2 的 /cmd_vel。
+                    # 用 PythonExpression 做条件取值，避免用户在关闭仲裁时
+                    # 还要额外手动改 cmd_vel_mux_topic。
+                    "cmd_vel_topic": PythonExpression(
+                        [
+                            "'",
+                            LaunchConfiguration("cmd_vel_mux_topic"),
+                            "' if '",
+                            LaunchConfiguration("use_twist_mux"),
+                            "' == 'true' else '/cmd_vel'",
+                        ]
+                    ),
                 }.items(),
+            ),
+            Node(
+                package="twist_mux",
+                executable="twist_mux",
+                name="twist_mux",
+                output="screen",
+                condition=IfCondition(LaunchConfiguration("use_twist_mux")),
+                parameters=[LaunchConfiguration("twist_mux_config")],
+                # twist_mux 默认输出到 /cmd_vel_out，重映射为底盘实际订阅的
+                # 仲裁输出话题，形成 Nav2/KCF/Web -> 仲裁 -> 底盘 的单链路。
+                remappings=[
+                    ("/cmd_vel_out", LaunchConfiguration("cmd_vel_mux_topic"))
+                ],
             ),
             IncludeLaunchDescription(
                 lidar_launch,
