@@ -415,12 +415,42 @@ ros2 run rqt_image_view rqt_image_view   # 选 /detect_target/debug_image
 递增：降输入分辨率 → Coral TPU / Hailo 加速棒 → 换用自带 VPU 的相机（如
 OAK-D，检测在相机端完成，宿主零负担）。
 
-#### 下一步（尚未实装）
+#### 检测与导航的自动衔接（target_fusion）
 
-当前检测与导航是解耦的——检测到目标后需要人工把 `/rescue/target_pose` 填给
-`FollowTarget` 的 `staging_pose`。后续将补一个融合节点自动完成这一步，并
-在目标不在视野时接入 `m-explore-ros2` 做自主搜索，形成完整的
-「搜索 → 检测 → 规划 → 逼近」链路。
+`detect_target` 只回答「画面里有什么、在哪」，不决定要不要过去。融合节点
+补上决策层，自动把检测结果变成 `FollowTarget` 的 `staging_pose`：
+
+```bash
+# 完整链路：检测 + 融合决策（需 kcf_track 以 follow_mode:=fusion 启动）
+ros2 launch rescue_perception rescue_perception.launch.py
+
+# 人工确认（对当前待确认目标下发导航）
+ros2 topic pub --once /rescue/confirm std_msgs/msg/Bool "{data: true}"
+```
+
+三级置信度策略（阈值可配）：
+
+| 置信度 | 行为 |
+| --- | --- |
+| ≥ `auto_conf_threshold`（默认 0.75） | 目标稳定后自动下发导航 |
+| ≥ `confirm_conf_threshold`（默认 0.40） | 记为待确认，发布 `/rescue/pending_target`，等人工确认 |
+| < 0.40 | 丢弃 |
+
+**稳定性校验**：单帧检测可能是闪烁误检，因此要求连续 `min_stable_count`
+（默认 3）次检测位置在 `stability_radius`（默认 0.5m）内，才认定为稳定目标。
+位置跳变会重新累计。
+
+救援场景误检代价高（机器人可能冲向错误的「人」而错过真正目标），因此提供
+`auto_mode:=false` 开关——关闭后**所有**目标都需人工确认，适合调试或高风险
+环境。
+
+融合节点同样不发布速度指令，只下发 action。
+
+#### 尚未实装：自主搜索
+
+目标**不在视野内**时的搜索能力（`m-explore-ros2`，按 frontier 探索未知区域）
+尚未接入。当前链路是「视野内检测 → 规划 → 逼近」，完整的
+「搜索 → 检测 → 规划 → 逼近」闭环待补。
 
 ## 6. 速度指令仲裁
 
@@ -809,8 +839,8 @@ git push origin v2.0.0-ros2
 - Web 控制台桥接层固定依赖 `rclpy`，无法在无 ROS2 环境运行期自检，全部运行时验证需在目标机完成。
 - `twist_mux` 仲裁已实装但**尚未在目标机验证**（需先 `apt install ros-humble-twist-mux`）。
 - 两阶段融合跟随（`FollowTarget`）已实装但**尚未实车验证**：`colcon build` 需生成 action 接口，staging 与伺服两阶段的实际衔接效果待验证。
-- 自主目标检测（`rescue_perception`）已实装但**尚未在目标机运行验证**：开发机无 numpy/cv2/ultralytics 且无法安装，只做了语法与静态引用检查；深度单位（Astra 默认 16UC1 毫米）与检测精度需实测确认。
-- 检测与导航目前**解耦**：需人工把 `/rescue/target_pose` 填给 `FollowTarget` 的 `staging_pose`，自动衔接与自主搜索（`m-explore-ros2`）尚未实装。
+- 自主目标检测（`rescue_perception`）已实装，核心逻辑已在 conda 环境验证（ultralytics API、检测框字段、深度换算/采样/反投影、稳定性与置信度分级，均通过）；但**未在目标机实车验证**——深度单位（Astra 默认 16UC1 毫米）与真实场景检测精度需实测确认。
+- 目标**不在视野内**时的自主搜索（`m-explore-ros2`）尚未接入，当前只支持「视野内检测 → 规划 → 逼近」。
 - STM32 侧仍建议增加独立通信看门狗（树莓派死机时 ROS2 无法发零速度）。
 - Web 控制台实时画面当前仅支持 `rgb8`/`bgr8` 未压缩编码；若相机发布 `mjpeg` 等压缩格式需改用 `cv_bridge`。
 - Nav2 参数主要针对 Mini 麦克纳姆底盘，其他车型需要实车调参。
