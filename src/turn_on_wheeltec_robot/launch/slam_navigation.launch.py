@@ -70,6 +70,7 @@ def generate_launch_description():
             DeclareLaunchArgument("laser_roll", default_value="0.0"),
             DeclareLaunchArgument("laser_pitch", default_value="0.0"),
             DeclareLaunchArgument("laser_yaw", default_value="3.14159"),
+            DeclareLaunchArgument("lidar_scan_mode", default_value="Standard"),
             IncludeLaunchDescription(
                 base_launch,
                 condition=IfCondition(LaunchConfiguration("start_base")),
@@ -96,6 +97,7 @@ def generate_launch_description():
                     "laser_roll": LaunchConfiguration("laser_roll"),
                     "laser_pitch": LaunchConfiguration("laser_pitch"),
                     "laser_yaw": LaunchConfiguration("laser_yaw"),
+                    "scan_mode": LaunchConfiguration("lidar_scan_mode"),
                 }.items(),
             ),
             Node(

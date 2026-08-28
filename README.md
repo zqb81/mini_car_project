@@ -428,7 +428,7 @@ KCF 与 Nav2 都会发布 /cmd_vel，不能直接同时控制底盘。并行运�
 
 ### 15.2 RPLIDAR A1M8 接入
 
-当前实机雷达型号为 SLAMTEC RPLIDAR A1M8。它是 2D 激光雷达，使用 115200 bit/s 串口，并通过稳定设备名 /dev/wheeltec_lidar 接入。
+当前实机雷达型号为 SLAMTEC RPLIDAR A1M8。它是 2D 激光雷达，使用 115200 bit/s 串口，并通过稳定设备名 /dev/wheeltec_lidar 接入。当前 A1M8 固件支持 Standard、Express、Boost、Stability；工程默认使用兼容性最高的 Standard。
 
 先安装官方 ROS2 驱动：
 
@@ -446,9 +446,18 @@ source install/setup.bash
 单独验证雷达：
 
 ~~~bash
-ros2 launch turn_on_wheeltec_robot rplidar_a1.launch.py +  serial_port:=/dev/wheeltec_lidar
+ros2 launch turn_on_wheeltec_robot rplidar_a1.launch.py \
+  serial_port:=/dev/wheeltec_lidar
 
 ros2 topic hz /scan
+~~~
+
+需要提高点数时可选择 Express 或 Boost；应先以 Standard 完成方向、TF 和建图验证：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot rplidar_a1.launch.py \
+  serial_port:=/dev/wheeltec_lidar \
+  scan_mode:=Express
 ~~~
 
 实时 SLAM 入口默认会启动 A1M8 驱动。Mini 麦克纳姆车型默认采用随车 ROS1 配置的 x=0.06、z=0.20、yaw=3.14159；雷达的实际安装位姿仍必须测量并在 RViz 中复核：

@@ -25,6 +25,7 @@ def generate_launch_description():
             DeclareLaunchArgument("laser_yaw", default_value="3.14159"),
             DeclareLaunchArgument("inverted", default_value="false"),
             DeclareLaunchArgument("angle_compensate", default_value="true"),
+            DeclareLaunchArgument("scan_mode", default_value="Standard"),
             Node(
                 package="rplidar_ros",
                 executable="rplidar_node",
@@ -44,7 +45,7 @@ def generate_launch_description():
                         "angle_compensate": ParameterValue(
                             LaunchConfiguration("angle_compensate"), value_type=bool
                         ),
-                        "scan_mode": "Sensitivity",
+                        "scan_mode": LaunchConfiguration("scan_mode"),
                     }
                 ],
             ),
