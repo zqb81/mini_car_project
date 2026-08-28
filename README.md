@@ -207,21 +207,21 @@ sudo apt install \
   ros-humble-robot-state-publisher
 ~~~
 
-RGB-D 相机和激光雷达驱动根据实物型号单独安装。默认沿用当前 Astra 工程的话题：
+RGB-D 相机和激光雷达驱动根据实物型号单独安装。Astra S 的 ROS2 驱动默认话题为：
 
 ~~~text
-/camera/rgb/image_raw
-/camera/depth/image
-/camera/rgb/camera_info
+/camera/color/image_raw
+/camera/depth/image_raw
+/camera/color/camera_info
 /scan
 ~~~
 
-RealSense 等相机可以覆盖话题，并应使用对齐到彩色相机的深度图：
+旧 ROS1 Astra 风格相机或 RealSense 等相机可以覆盖话题；RGB-D 必须使用对齐到彩色相机的深度图：
 
 ~~~bash
-rgb_topic:=/camera/color/image_raw \
-depth_topic:=/camera/aligned_depth_to_color/image_raw \
-camera_info_topic:=/camera/color/camera_info
+rgb_topic:=/camera/rgb/image_raw \
+depth_topic:=/camera/depth/image \
+camera_info_topic:=/camera/rgb/camera_info
 ~~~
 
 ## 8. 获取与构建
@@ -246,7 +246,99 @@ source /opt/ros/humble/setup.bash
 source ~/mini_car_ws/install/setup.bash
 ~~~
 
-## 9. udev 串口配置
+## 9. Astra S 深度相机驱动
+
+随车资料提供了适配 Astra S 的 ROS2 包 ros2_astra_camera。该包包含奥比中光专有 OpenNI2 二进制库，不直接纳入本 Git 仓库；请从随车资料中的 humble-src-2023-12-29.zip 提取以下两个目录到工作空间：
+
+~~~text
+wheeltec_ros2/src/ros2_astra_camera/astra_camera
+wheeltec_ros2/src/ros2_astra_camera/astra_camera_msgs
+~~~
+
+解压资料压缩包后，目标机应满足：
+
+~~~text
+~/mini_car_ws/src/astra_camera
+~/mini_car_ws/src/astra_camera_msgs
+~~~
+
+可将 Windows 附送资料中的 humble-src-2023-12-29.zip 通过 U 盘或 SCP 传到目标机的 Downloads 目录，然后提取相机包：
+
+~~~bash
+sudo apt install -y unzip
+mkdir -p ~/mini_car_ws/_vendor
+unzip -q ~/Downloads/humble-src-2023-12-29.zip \
+  'wheeltec_ros2/src/ros2_astra_camera/*' \
+  -d ~/mini_car_ws/_vendor
+
+cp -a \
+  ~/mini_car_ws/_vendor/wheeltec_ros2/src/ros2_astra_camera/astra_camera \
+  ~/mini_car_ws/_vendor/wheeltec_ros2/src/ros2_astra_camera/astra_camera_msgs \
+  ~/mini_car_ws/src/
+~~~
+
+相机包含有厂家专有 OpenNI2 二进制库，因此被 .gitignore 排除；不要把它提交到本项目的公共仓库。
+
+安装构建依赖。低内存树莓派请保持单线程：
+
+~~~bash
+sudo apt update
+sudo apt install -y +  build-essential cmake git +  libgflags-dev libgoogle-glog-dev nlohmann-json3-dev +  libusb-1.0-0-dev +  ros-humble-image-transport +  ros-humble-image-publisher +  ros-humble-image-geometry +  ros-humble-camera-info-manager +  ros-humble-tf2-eigen +  ros-humble-tf2-sensor-msgs
+
+mkdir -p ~/camera_dependencies
+cd ~/camera_dependencies
+
+git clone --depth 1 --branch v0.8.0 +  https://github.com/Neargye/magic_enum.git
+cmake -S magic_enum -B magic_enum/build
+cmake --build magic_enum/build --parallel 1
+sudo cmake --install magic_enum/build
+
+git clone --depth 1 https://github.com/libuvc/libuvc.git
+cmake -S libuvc -B libuvc/build -DBUILD_EXAMPLES=OFF
+cmake --build libuvc/build --parallel 1
+sudo cmake --install libuvc/build
+sudo ldconfig
+~~~
+
+编译相机包和本工程：
+
+~~~bash
+cd ~/mini_car_ws
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+
+colcon build --packages-select astra_camera_msgs astra_camera \
+  --symlink-install --parallel-workers 1
+colcon build --packages-select turn_on_wheeltec_robot kcf_track \
+  --symlink-install --parallel-workers 1
+source install/setup.bash
+~~~
+
+插上 Astra S 后，单独验证相机。工程启动文件会开启深度对齐和 RGB/Depth 同步：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot astra_s.launch.py
+~~~
+
+另开终端检查：
+
+~~~bash
+source /opt/ros/humble/setup.bash
+source ~/mini_car_ws/install/setup.bash
+
+ros2 topic hz /camera/color/image_raw
+ros2 topic hz /camera/depth/image_raw
+ros2 topic echo --once /camera/color/camera_info
+~~~
+
+若相机驱动已单独启动，运行在线 SLAM 时必须禁止重复启动：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
+  start_astra_camera:=false
+~~~
+
+## 10. udev 串口配置
 
 先确定实际设备：
 
@@ -270,7 +362,7 @@ src/turn_on_wheeltec_robot/scripts/wheeltec_udev.sh
 ros2 launch turn_on_wheeltec_robot base.launch.py serial_port:=/dev/ttyUSB0
 ~~~
 
-## 10. 基础底盘测试
+## 11. 基础底盘测试
 
 启动：
 
@@ -299,7 +391,7 @@ ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist \
 
 停止发布后，桥接节点会在默认 0.5 秒内发送零速度。
 
-## 11. 实时 SLAM 建图与导航
+## 12. 实时 SLAM 建图与导航
 
 实时建图和实时导航可以同时运行，但它们不是同一个节点：
 
@@ -327,24 +419,24 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
   database_path:=$HOME/.ros/mini_car_slam.db
 ~~~
 
-必须先启动相机和雷达驱动，再启动该入口。实时 SLAM 的最小数据闭环是：
+该入口默认自动启动 Astra S 与 A1M8 驱动。若已在其他终端启动相机或雷达，分别传入 start_astra_camera:=false 或 start_lidar:=false，避免重复占用设备。实时 SLAM 的最小数据闭环是：
 
-- /camera/rgb/image_raw
-- /camera/depth/image
-- /camera/rgb/camera_info
+- /camera/color/image_raw
+- /camera/depth/image_raw
+- /camera/color/camera_info
 - /scan
 - /odom
 - map -> odom -> base_footprint -> camera_link
 
 实时导航时不要启动 map_server 加载旧地图，也不要启动 AMCL 作为第二个定位源；地图由 RTAB-Map 在线发布，Nav2 的全局代价地图订阅 /map。
 
-## 12. RTAB-Map 建图
+## 13. RTAB-Map 建图
 
-先分别启动 RGB-D 相机和雷达驱动：
+先启动 RGB-D 相机和雷达驱动，或使用上面的实时 SLAM 入口自动启动：
 
 ~~~bash
-ros2 topic hz /camera/rgb/image_raw
-ros2 topic hz /camera/depth/image
+ros2 topic hz /camera/color/image_raw
+ros2 topic hz /camera/depth/image_raw
 ros2 topic hz /scan
 ~~~
 
@@ -365,7 +457,7 @@ cp ~/.ros/mini_car_rtabmap.db \
 
 树莓派建议使用较低 RGB-D 分辨率和帧率，保持低速移动，关闭不必要的可视化，并做好散热。
 
-## 13. RTAB-Map 数据库定位导航
+## 14. RTAB-Map 数据库定位导航
 
 导航前必须已有数据库：
 
@@ -391,15 +483,15 @@ ros2 launch turn_on_wheeltec_robot rtabmap_navigation.launch.py \
 
 Nav2 参数位于 src/turn_on_wheeltec_robot/config/nav2_params.yaml。默认参数按 Mini 麦克纳姆底盘配置，其他车型需要调整速度空间、机器人尺寸和转弯约束。
 
-## 14. KCF 视觉跟随
+## 15. KCF 视觉跟随
 
 先启动 RGB-D 相机：
 
 ~~~bash
 ros2 launch kcf_track kcf_tracking.launch.py \
   model:=mini_mec \
-  rgb_topic:=/camera/rgb/image_raw \
-  depth_topic:=/camera/depth/image
+  rgb_topic:=/camera/color/image_raw \
+  depth_topic:=/camera/depth/image_raw
 ~~~
 
 桌面环境中，在 KCF RGB 窗口拖动鼠标选择目标。无显示器时可以指定初始 ROI：
@@ -415,9 +507,9 @@ ros2 run kcf_track kcf_node --ros-args \
 
 KCF 与 Nav2 都会发布 /cmd_vel，不能直接同时控制底盘。并行运行时应增加 twist_mux 并制定优先级。
 
-## 15. 救援场景传感器建议
+## 16. 救援场景传感器建议
 
-### 15.1 基础闭环
+### 16.1 基础闭环
 
 | 传感器 | 作用 | 当前工程状态 |
 | --- | --- | --- |
@@ -426,7 +518,7 @@ KCF 与 Nav2 都会发布 /cmd_vel，不能直接同时控制底盘。并行运�
 | 2D 激光雷达 | 平面避障和激光 SLAM | ROS 话题 /scan，需安装硬件驱动 |
 | RGB-D 相机 | 视觉回环、深度障碍和目标跟踪 | 当前 launch 已预留 Astra 话题 |
 
-### 15.2 RPLIDAR A1M8 接入
+### 16.2 RPLIDAR A1M8 接入
 
 当前实机雷达型号为 SLAMTEC RPLIDAR A1M8。它是 2D 激光雷达，使用 115200 bit/s 串口，并通过稳定设备名 /dev/wheeltec_lidar 接入。当前 A1M8 固件支持 Standard、Express、Boost、Stability；工程默认使用兼容性最高的 Standard。
 
@@ -473,7 +565,7 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
 ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py start_lidar:=false
 ~~~
 
-### 15.3 厂房救援推荐
+### 16.3 厂房救援推荐
 
 普通 RGB-D 相机不应作为救援环境唯一的定位或避障传感器。烟尘、黑暗、强逆光、反光金属、热源和水雾都会使深度图或视觉特征退化。建议按预算增加：
 
@@ -486,11 +578,11 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py start_lidar:=false
 
 如果只能增加一种定位相关传感器，优先选择带 IMU 的 3D 激光雷达；如果任务重点是找人，增加热成像相机和气体传感器，但仍保留激光雷达作为避障主传感器。
 
-### 15.4 救援系统安全边界
+### 16.4 救援系统安全边界
 
 该系统适合人在回路的实验和辅助侦察，不应直接视为消防或生命安全认证设备。必须提供人工接管、急停、失联停车、低电量停车、传感器失效降级和通信日志；正式部署前应在烟雾、弱光、反光、狭窄通道和动态障碍物条件下做分级测试。
 
-## 16. 常见问题
+## 17. 常见问题
 
 ### 14.1 串口打不开
 
@@ -512,9 +604,9 @@ sudo usermod -aG dialout $USER
 ### 14.3 RTAB-Map 没有输出 /map
 
 ~~~bash
-ros2 topic hz /camera/rgb/image_raw
-ros2 topic hz /camera/depth/image
-ros2 topic hz /camera/rgb/camera_info
+ros2 topic hz /camera/color/image_raw
+ros2 topic hz /camera/depth/image_raw
+ros2 topic hz /camera/color/camera_info
 ros2 topic hz /scan
 ros2 topic hz /odom
 ros2 run tf2_tools view_frames
@@ -541,7 +633,7 @@ colcon build --symlink-install --event-handlers console_direct+
 
 本仓库不包含相机与雷达驱动，相关包需按硬件型号安装。
 
-## 17. Git 工作流
+## 18. Git 工作流
 
 ~~~bash
 git switch main
@@ -565,7 +657,7 @@ git tag -a v2.0.0-ros2 -m "ROS2 Humble 与 RTAB-Map/Nav2 迁移版"
 git push origin v2.0.0-ros2
 ~~~
 
-## 18. 当前限制
+## 19. 当前限制
 
 - 当前 Windows 工作机没有 ROS2 Humble，已完成静态语法与结构验证，最终 colcon build 必须在 Ubuntu 22.04 / Humble 上执行。
 - 相机、雷达驱动未纳入仓库。
@@ -574,7 +666,7 @@ git push origin v2.0.0-ros2
 - STM32 侧仍建议增加独立通信看门狗。
 - 实时 SLAM 需要相机、雷达和各自 ROS2 驱动；本仓库只提供桥接和算法启动配置。
 
-## 19. 参考资料
+## 20. 参考资料
 
 - [RTAB-Map](https://github.com/introlab/rtabmap)
 - [rtabmap_ros](https://github.com/introlab/rtabmap_ros)

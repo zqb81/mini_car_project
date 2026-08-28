@@ -29,10 +29,10 @@ def generate_launch_description():
                 "serial_port", default_value="/dev/wheeltec_controller"
             ),
             DeclareLaunchArgument(
-                "rgb_topic", default_value="/camera/rgb/image_raw"
+                "rgb_topic", default_value="/camera/color/image_raw"
             ),
             DeclareLaunchArgument(
-                "depth_topic", default_value="/camera/depth/image"
+                "depth_topic", default_value="/camera/depth/image_raw"
             ),
             DeclareLaunchArgument("show_window", default_value="true"),
             IncludeLaunchDescription(

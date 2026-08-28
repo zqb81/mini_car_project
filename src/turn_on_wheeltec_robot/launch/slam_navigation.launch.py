@@ -25,6 +25,9 @@ def generate_launch_description():
     lidar_launch = PythonLaunchDescriptionSource(
         os.path.join(package_share, "launch", "rplidar_a1.launch.py")
     )
+    camera_launch = PythonLaunchDescriptionSource(
+        os.path.join(package_share, "launch", "astra_s.launch.py")
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
 
@@ -32,6 +35,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("start_base", default_value="true"),
             DeclareLaunchArgument("start_lidar", default_value="true"),
+            DeclareLaunchArgument("start_astra_camera", default_value="true"),
             DeclareLaunchArgument("model", default_value="mini_mec"),
             DeclareLaunchArgument(
                 "serial_port", default_value="/dev/wheeltec_controller"
@@ -50,13 +54,13 @@ def generate_launch_description():
                 default_value=os.path.join(package_share, "config", "nav2_params.yaml"),
             ),
             DeclareLaunchArgument(
-                "rgb_topic", default_value="/camera/rgb/image_raw"
+                "rgb_topic", default_value="/camera/color/image_raw"
             ),
             DeclareLaunchArgument(
-                "depth_topic", default_value="/camera/depth/image"
+                "depth_topic", default_value="/camera/depth/image_raw"
             ),
             DeclareLaunchArgument(
-                "camera_info_topic", default_value="/camera/rgb/camera_info"
+                "camera_info_topic", default_value="/camera/color/camera_info"
             ),
             DeclareLaunchArgument("scan_topic", default_value="/scan"),
             DeclareLaunchArgument("odom_topic", default_value="/odom"),
@@ -99,6 +103,10 @@ def generate_launch_description():
                     "laser_yaw": LaunchConfiguration("laser_yaw"),
                     "scan_mode": LaunchConfiguration("lidar_scan_mode"),
                 }.items(),
+            ),
+            IncludeLaunchDescription(
+                camera_launch,
+                condition=IfCondition(LaunchConfiguration("start_astra_camera")),
             ),
             Node(
                 package="rtabmap_sync",

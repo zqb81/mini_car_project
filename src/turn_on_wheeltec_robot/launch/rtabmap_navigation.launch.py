@@ -45,13 +45,13 @@ def generate_launch_description():
                 default_value=package_share + "/config/nav2_params.yaml",
             ),
             DeclareLaunchArgument(
-                "rgb_topic", default_value="/camera/rgb/image_raw"
+                "rgb_topic", default_value="/camera/color/image_raw"
             ),
             DeclareLaunchArgument(
-                "depth_topic", default_value="/camera/depth/image"
+                "depth_topic", default_value="/camera/depth/image_raw"
             ),
             DeclareLaunchArgument(
-                "camera_info_topic", default_value="/camera/rgb/camera_info"
+                "camera_info_topic", default_value="/camera/color/camera_info"
             ),
             DeclareLaunchArgument("scan_topic", default_value="/scan"),
             DeclareLaunchArgument("odom_topic", default_value="/odom"),

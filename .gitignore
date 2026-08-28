@@ -27,3 +27,7 @@ Listings/
 *.uvguix.*
 *.uvoptx
 *.baiduyun.p.downloading
+
+# 奥比中光 Astra S 驱动来自随车资料，含专有 OpenNI2 二进制库，不纳入本仓库。
+src/astra_camera/
+src/astra_camera_msgs/

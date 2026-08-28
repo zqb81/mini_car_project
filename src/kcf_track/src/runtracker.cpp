@@ -32,9 +32,9 @@ public:
   : Node("kcf_tracker"), tracker_(true, false, true, false)
   {
     rgb_topic_ = declare_parameter<std::string>(
-      "rgb_topic", "/camera/rgb/image_raw");
+      "rgb_topic", "/camera/color/image_raw");
     depth_topic_ = declare_parameter<std::string>(
-      "depth_topic", "/camera/depth/image");
+      "depth_topic", "/camera/depth/image_raw");
     show_window_ = declare_parameter<bool>("show_window", true);
 
     const int roi_x = declare_parameter<int>("initial_roi.x", 0);
