@@ -22,7 +22,7 @@
 - STM32 控制板：CP2102 序列号 0002，稳定路径 /dev/wheeltec_controller。
 - RPLIDAR A1M8：CP2102 序列号 0001，稳定路径 /dev/wheeltec_lidar，115200，默认 Standard 模式。
 - 深度相机：Orbbec Astra Pro。USB 2bc5:0403 是深度设备，2bc5:0502 是独立彩色 UVC 设备。
-- Astra 驱动 astra_camera 与 astra_camera_msgs 来自随车资料，含专有 OpenNI2 二进制，不提交公共仓库。
+- Astra 驱动 astra_camera 与 astra_camera_msgs 已作为随车资料的 vendored source 纳入仓库；修改时保留原始许可、OpenNI2 二进制和目录结构。
 
 ## 安全约束
 
@@ -49,5 +49,4 @@
 
 - 稳定分支为 main，远程为 https://gitee.com/qbz23/mini_car_project.git。
 - 禁止强推、硬重置或删除用户未确认的数据。
-- 外部驱动目录 src/astra_camera 和 src/astra_camera_msgs 已被忽略。
-- 外部 rplidar_ros 当前由目标机单独克隆；不要无理由将第三方源码并入主仓库。
+- rplidar_ros、astra_camera 和 astra_camera_msgs 是仓库内置的第三方源码。升级时应记录上游仓库、分支/提交和许可变化，不得删除其 LICENSE 文件。

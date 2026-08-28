@@ -165,7 +165,7 @@ src/turn_on_wheeltec_robot/config/nav2_params.yaml
 
 KCF 和 Nav2 都会发布 /cmd_vel，当前没有 twist_mux。不得同时让二者控制底盘。
 
-### 5.3 外部驱动
+### 5.3 内置第三方驱动
 
 目标机工作空间额外包含：
 
@@ -175,10 +175,11 @@ src/astra_camera
 src/astra_camera_msgs
 ~~~
 
-- rplidar_ros 来自 SLAMTEC ros2 分支。
-- Astra 两个包来自随车 humble-src-2023-12-29.zip。
-- Astra 包含专有 OpenNI2 二进制，已被 .gitignore 排除。
+- rplidar_ros 来自 SLAMTEC ros2 分支，保留其 LICENSE 和 CHANGELOG。
+- Astra 两个包来自随车 humble-src-2023-12-29.zip，包含专有 OpenNI2 二进制和原始许可信息。
+- 这三个包已作为 vendored source 纳入主仓库，目标机不需要额外克隆或复制。
 - 临时解压目录必须放到工作空间外。colcon 会递归扫描工作空间，曾因 _vendor 与 src 中同时存在 Astra 包而报重复包。
+- 第三方来源、提交和许可限制见 docs/THIRD_PARTY_NOTICES.md。
 
 ## 6. 启动入口
 

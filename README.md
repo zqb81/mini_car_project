@@ -2,7 +2,7 @@
 
 本工程包含 STM32F103VET6 底盘固件、ROS2 底盘串口桥接、KCF RGB-D 目标跟踪，以及 RTAB-Map + Nav2 建图导航配置。
 
-智能体或新开发者接手前，请先阅读 [智能体交接文档](docs/AGENT_HANDOFF.md) 和 [仓库工作约束](AGENTS.md)。
+智能体或新开发者接手前，请先阅读 [智能体交接文档](docs/AGENT_HANDOFF.md)、[仓库工作约束](AGENTS.md) 和 [第三方组件说明](docs/THIRD_PARTY_NOTICES.md)。
 
 目标环境：
 
@@ -57,6 +57,8 @@ mini_car/
 │   ├── HARDWARE/                     电机、编码器、串口、CAN、ADC
 │   └── FreeRTOS/                     FreeRTOS 9
 ├── src/
+│   ├── astra_camera/                 Astra Pro 驱动与 OpenNI2 库
+│   ├── astra_camera_msgs/            Astra Pro 自定义消息与服务
 │   ├── turn_on_wheeltec_robot/
 │   │   ├── config/
 │   │   │   ├── wheeltec_bridge.yaml  串口桥接参数
@@ -64,14 +66,16 @@ mini_car/
 │   │   ├── launch/
 │   │   │   ├── base.launch.py
 │   │   │   ├── rtabmap_mapping.launch.py
-│   │   │   └── rtabmap_navigation.launch.py
+│   │   │   ├── rtabmap_navigation.launch.py
+│   │   │   └── slam_navigation.launch.py
 │   │   ├── src/wheeltec_robot.cpp    ROS2 串口桥接
 │   │   ├── urdf/                     车型模型
 │   │   └── map/                      示例地图
-│   └── kcf_track/
+│   ├── kcf_track/
 │       ├── launch/kcf_tracking.launch.py
 │       ├── scripts/kcf_follow.py
 │       └── src/                      KCF 与 ROS2 图像节点
+│   └── rplidar_ros/                  SLAMTEC RPLIDAR ROS2 驱动
 └── README.md
 ~~~
 
@@ -250,36 +254,21 @@ source ~/mini_car_ws/install/setup.bash
 
 ## 9. Astra Pro 深度相机驱动
 
-当前实物由 USB 枚举确认是 Orbbec Astra Pro：2bc5:0403 为深度设备，2bc5:0502 为 Astra Pro FHD 彩色 UVC 设备。随车资料提供了对应 ROS2 包 ros2_astra_camera。该包包含奥比中光专有 OpenNI2 二进制库，不直接纳入本 Git 仓库；请从随车资料中的 humble-src-2023-12-29.zip 提取以下两个目录到工作空间：
+当前实物由 USB 枚举确认是 Orbbec Astra Pro：2bc5:0403 为深度设备，2bc5:0502 为 Astra Pro FHD 彩色 UVC 设备。对应 ROS2 包已随工程纳入 src/astra_camera 和 src/astra_camera_msgs，包含随车资料提供的 OpenNI2 二进制库。第三方来源与许可边界见 docs/THIRD_PARTY_NOTICES.md。
 
 ~~~text
 wheeltec_ros2/src/ros2_astra_camera/astra_camera
 wheeltec_ros2/src/ros2_astra_camera/astra_camera_msgs
 ~~~
 
-解压资料压缩包后，目标机应满足：
+目标机拉取仓库后应已有：
 
 ~~~text
 ~/mini_car_ws/src/astra_camera
 ~/mini_car_ws/src/astra_camera_msgs
 ~~~
 
-可将 Windows 附送资料中的 humble-src-2023-12-29.zip 通过 U 盘或 SCP 传到目标机的 Downloads 目录，然后提取相机包：
-
-~~~bash
-sudo apt install -y unzip
-mkdir -p ~/mini_car_ws/_vendor
-unzip -q ~/Downloads/humble-src-2023-12-29.zip \
-  'wheeltec_ros2/src/ros2_astra_camera/*' \
-  -d ~/mini_car_ws/_vendor
-
-cp -a \
-  ~/mini_car_ws/_vendor/wheeltec_ros2/src/ros2_astra_camera/astra_camera \
-  ~/mini_car_ws/_vendor/wheeltec_ros2/src/ros2_astra_camera/astra_camera_msgs \
-  ~/mini_car_ws/src/
-~~~
-
-相机包含有厂家专有 OpenNI2 二进制库，因此被 .gitignore 排除；不要把它提交到本项目的公共仓库。
+不要在工作空间内额外解压第二份 Astra 驱动，否则 colcon 会报 Duplicate package names。
 
 安装构建依赖。低内存树莓派请保持单线程：
 
@@ -538,12 +527,9 @@ KCF 与 Nav2 都会发布 /cmd_vel，不能直接同时控制底盘。并行运�
 
 ~~~bash
 cd ~/mini_car_ws/src
-git clone -b ros2 https://github.com/Slamtec/rplidar_ros.git
-
 cd ~/mini_car_ws
 source /opt/ros/humble/setup.bash
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --packages-select rplidar_ros --symlink-install
+colcon build --packages-select rplidar_ros --symlink-install --parallel-workers 1
 source install/setup.bash
 ~~~
 
