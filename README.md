@@ -246,9 +246,9 @@ source /opt/ros/humble/setup.bash
 source ~/mini_car_ws/install/setup.bash
 ~~~
 
-## 9. Astra S 深度相机驱动
+## 9. Astra Pro 深度相机驱动
 
-随车资料提供了适配 Astra S 的 ROS2 包 ros2_astra_camera。该包包含奥比中光专有 OpenNI2 二进制库，不直接纳入本 Git 仓库；请从随车资料中的 humble-src-2023-12-29.zip 提取以下两个目录到工作空间：
+当前实物由 USB 枚举确认是 Orbbec Astra Pro：2bc5:0403 为深度设备，2bc5:0502 为 Astra Pro FHD 彩色 UVC 设备。随车资料提供了对应 ROS2 包 ros2_astra_camera。该包包含奥比中光专有 OpenNI2 二进制库，不直接纳入本 Git 仓库；请从随车资料中的 humble-src-2023-12-29.zip 提取以下两个目录到工作空间：
 
 ~~~text
 wheeltec_ros2/src/ros2_astra_camera/astra_camera
@@ -314,10 +314,10 @@ colcon build --packages-select turn_on_wheeltec_robot kcf_track \
 source install/setup.bash
 ~~~
 
-插上 Astra S 后，单独验证相机。工程启动文件会开启深度对齐和 RGB/Depth 同步：
+插上 Astra Pro 后，单独验证相机。工程启动文件会开启 Astra Pro 的 UVC 彩色流、深度对齐和 RGB/Depth 同步：
 
 ~~~bash
-ros2 launch turn_on_wheeltec_robot astra_s.launch.py
+ros2 launch turn_on_wheeltec_robot astra_pro.launch.py
 ~~~
 
 另开终端检查：
@@ -419,7 +419,7 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
   database_path:=$HOME/.ros/mini_car_slam.db
 ~~~
 
-该入口默认自动启动 Astra S 与 A1M8 驱动。若已在其他终端启动相机或雷达，分别传入 start_astra_camera:=false 或 start_lidar:=false，避免重复占用设备。实时 SLAM 的最小数据闭环是：
+该入口默认自动启动 Astra Pro 与 A1M8 驱动。若已在其他终端启动相机或雷达，分别传入 start_astra_camera:=false 或 start_lidar:=false，避免重复占用设备。实时 SLAM 的最小数据闭环是：
 
 - /camera/color/image_raw
 - /camera/depth/image_raw

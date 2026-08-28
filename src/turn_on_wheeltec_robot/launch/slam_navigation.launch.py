@@ -26,7 +26,7 @@ def generate_launch_description():
         os.path.join(package_share, "launch", "rplidar_a1.launch.py")
     )
     camera_launch = PythonLaunchDescriptionSource(
-        os.path.join(package_share, "launch", "astra_s.launch.py")
+        os.path.join(package_share, "launch", "astra_pro.launch.py")
     )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
