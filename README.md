@@ -121,7 +121,8 @@ mini_car/
 | `rtabmap_navigation.launch.py` | 基于已有数据库的定位导航 |
 | `astra_pro.launch.py` | 单独启动 Astra Pro 相机 |
 | `rplidar_a1.launch.py` | 单独启动 RPLIDAR A1M8 |
-| `astra_s.launch.py` | Astra S 相机入口 |
+
+> 实物只有 Orbbec Astra Pro（深度 `2bc5:0403`、彩色 UVC `2bc5:0502`）。同目录下的 `astra_s.launch.py` 与 `src/astra_camera/launch/` 内的 Astra Mini / Pro Plus 等入口对应仓库里没有的型号，**不适用本设备**，不要照抄使用。
 
 同目录下的 `*.launch`（如 `mapping.launch`、`navigation.launch`、`turn_on_wheeltec_robot.launch`）是旧 ROS1 XML launch，仅作迁移对照保留；`CMakeLists.txt` 只安装 `*.launch.py`，它们不会进入 ROS2 安装空间。`send_mark.py`、`imageResize.py` 同理不参与 ROS2 安装。
 
