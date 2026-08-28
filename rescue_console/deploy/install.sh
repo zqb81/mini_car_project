@@ -14,8 +14,7 @@
 #
 # 用法：
 #   cd ~/mini_car_ws/rescue_console/deploy
-#   ./install.sh            # 默认 RESCUE_BRIDGE=ros（接真实 ROS2 话题）
-#   ./install.sh --mock     # 部署为模拟模式（不依赖 ROS，用于链路自检）
+#   ./install.sh            # 注册 systemd 服务（接真实 ROS2 话题）
 #
 # 产物：
 #   ~/mini_car_ws/rescue_console/venv            Python 虚拟环境（Web 依赖）
@@ -27,15 +26,10 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 USER_NAME="$(whoami)"
 HOME_DIR="$(eval echo "~$USER_NAME")"
-BRIDGE_MODE="ros"
-
-if [[ "${1:-}" == "--mock" ]]; then
-    BRIDGE_MODE="mock"
-fi
 
 echo "==> 部署目录: $APP_DIR"
 echo "==> 运行用户: $USER_NAME ($HOME_DIR)"
-echo "==> 桥接模式: $BRIDGE_MODE"
+echo "==> 桥接模式: ros（固定，接真实 ROS2 话题）"
 
 # 1. 系统依赖：python3-venv 用于创建隔离环境，避免污染系统 pip。
 #    Ubuntu 22.04 无 PEP 668 限制，但 venv 仍是最干净的方案。
@@ -63,7 +57,6 @@ echo "==> 注册 systemd 服务"
 sed -e "s|__USER__|$USER_NAME|g" \
     -e "s|__HOME__|$HOME_DIR|g" \
     -e "s|__APP_DIR__|$APP_DIR|g" \
-    -e "s|Environment=RESCUE_BRIDGE=ros|Environment=RESCUE_BRIDGE=$BRIDGE_MODE|" \
     "$APP_DIR/deploy/rescue-console.service.template" \
     > /tmp/rescue-console.service
 sudo cp /tmp/rescue-console.service /etc/systemd/system/rescue-console.service
@@ -85,9 +78,9 @@ echo ""
 echo " 常用命令："
 echo "   systemctl status rescue-console       # 查看状态"
 echo "   journalctl -u rescue-console -f       # 看日志"
-echo "   sudo systemctl edit rescue-console    # 改 RESCUE_BRIDGE 等环境变量"
+echo "   sudo systemctl edit rescue-console    # 改 RESCUE_LASER_YAW_OFFSET 等环境变量"
 echo "   sudo systemctl restart rescue-console"
 echo ""
-echo " 注意：ros 模式需 slam_navigation.launch.py 在运行，"
+echo " 注意：本服务需 slam_navigation.launch.py 在运行，"
 echo "       且首次接实车务必车轮悬空（见 rescue_console/README.md 安全约束）"
 echo "============================================================"

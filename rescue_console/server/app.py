@@ -3,10 +3,12 @@
 
 业务目的：
   在小车侧提供一层 HTTP + WebSocket 中间服务，把 ROS2 话题/动作封装为
-  面向浏览器的 JSON 协议，客户端不依赖任何 ROS 库。Demo 阶段默认使用
-  MockBridge 模拟数据源；部署到树莓派后设置 RESCUE_BRIDGE=ros 切换。
+  面向浏览器的 JSON 协议，客户端不依赖任何 ROS 库。桥接层固定使用
+  RosBridge，直接读写目标机上的真实 ROS2 话题与 Nav2 动作。
 
-启动：
+启动（必须先 source ROS2 与 colcon 工作空间，否则 rclpy 导入失败）：
+  source /opt/ros/humble/setup.bash
+  source ~/mini_car_ws/install/setup.bash
   cd rescue_console/server
   python -m uvicorn app:app --host 0.0.0.0 --port 8000
 
@@ -124,7 +126,7 @@ async def status() -> dict:
         "bridge": bridge.name,
         "clients": len(_clients),
         "uptime_s": round(time.time() - _started_at, 1),
-        "note": "Demo 模式（模拟数据源）" if bridge.name == "mock" else "ROS2 桥接",
+        "note": "ROS2 桥接（真实话题）",
     }
 
 

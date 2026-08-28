@@ -4,9 +4,8 @@
 # 替换为实际值后安装到 /etc/systemd/system/rescue-console.service。
 # 不要手工复制本文件；需要调整时改模板后重新执行 install.sh。
 #
-# 桥接模式说明：
-#   RESCUE_BRIDGE=ros  接 ROS2 真实话题（需要 slam_navigation.launch.py 在运行）
-#   RESCUE_BRIDGE=mock 模拟数据源（不依赖 ROS，用于部署链路自检）
+# 运行前提：slam_navigation.launch.py 已在运行（底盘 + 雷达 + 相机 +
+#          RTAB-Map + Nav2），本网关只做话题桥接，不启动传感器。
 
 [Unit]
 Description=Rescue console gateway (FastAPI, mini_car)
@@ -18,7 +17,6 @@ Wants=network-online.target
 Type=simple
 User=__USER__
 WorkingDirectory=__APP_DIR__/server
-Environment=RESCUE_BRIDGE=ros
 # A1M8 安装朝向偏移（弧度），随车默认 yaw=pi，实测后覆盖（README 16.2）
 Environment=RESCUE_LASER_YAW_OFFSET=3.14159265
 # 先 source ROS2 系统环境与工作空间，再启动 venv 内的 uvicorn；

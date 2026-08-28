@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
-"""桥接层：网关与数据源（模拟 / ROS2）之间的抽象。
+"""桥接层：网关与 ROS2 真实小车之间的数据通路。
 
 业务目的：
-  救援控制台网关不应关心数据来自模拟器还是真实小车。本文件定义统一桥接
-  接口 BaseBridge，并提供两个实现：
-    - MockBridge：本机 Demo 用，内置合成厂房环境、激光射线仿真、
-      cmd_vel 看门狗与演示级导航控制器，不依赖 ROS2。
-    - RosBridge：目标机（树莓派 + Ubuntu 22.04 + ROS2 Humble）用，通过
+  救援控制台网关通过 rclpy 接入目标机的 ROS2 话题与动作，使浏览器客户端
+  无需任何 ROS 依赖即可遥测、遥控与下发导航目标。本文件定义桥接接口
+  BaseBridge，并提供面向目标机的唯一实现 RosBridge：
+    - RosBridge：目标机（Ubuntu 22.04 + ROS2 Humble，aarch64）用，通过
       rclpy 订阅 /odom、/PowerVoltage、/chassis_enabled、/scan、/map，
       发布 /cmd_vel，导航目标走 Nav2 NavigateToPose action。
-  通过环境变量 RESCUE_BRIDGE=mock|ros 切换，默认 mock。
+
+  运行前提：必须在 source 过 ROS2 Humble 与 colcon 工作空间的环境里启动，
+  否则 rclpy 导入失败并抛出中文提示（见 RosBridge.__init__）。
 
 接口约定（见同目录 app.py）：
   tick(dt)         由服务端以固定周期调用，推进内部状态
@@ -29,51 +30,10 @@ from typing import Optional
 
 
 # ---------------------------------------------------------------------------
-# 合成厂房环境（仅 MockBridge 使用）
-# 地图 20m x 16m，分辨率 0.05m/格。坐标系：原点在左下角，x 向右，y 向上，
-# theta 为弧度、逆时针为正（与 ROS 一致）。
+# 全局常量
 # ---------------------------------------------------------------------------
-_MAP_W_M = 20.0
-_MAP_H_M = 16.0
-_MAP_RES = 0.05
-_MAP_COLS = int(_MAP_W_M / _MAP_RES)
-_MAP_ROWS = int(_MAP_H_M / _MAP_RES)
-
-# 障碍物列表：矩形（x0,y0,x1,y1），单位米
-_WALLS = [
-    (0.0, 0.0, 20.0, 0.2),    # 下外墙
-    (0.0, 15.8, 20.0, 16.0),  # 上外墙
-    (0.0, 0.0, 0.2, 16.0),    # 左外墙
-    (19.8, 0.0, 20.0, 16.0),  # 右外墙
-    (5.0, 3.0, 5.4, 8.0),     # 立柱 A
-    (10.0, 6.0, 10.4, 11.0),  # 立柱 B
-    (14.0, 2.0, 14.4, 7.0),   # 立柱 C
-    (3.0, 11.0, 8.0, 11.4),   # 隔墙 1
-    (12.0, 11.0, 17.0, 11.4), # 隔墙 2
-    (8.0, 2.0, 12.0, 2.4),    # 货架
-]
-
-_SCAN_RAYS = 240          # 模拟激光射线数（真实 A1M8 约 800 点/帧）
-_SCAN_RANGE_MAX = 12.0    # A1M8 量程 12m
-_CMD_VEL_TIMEOUT = 0.5    # 手动指令超时（秒），与 ROS2 桥接看门狗一致
-_MAX_LIN = 0.6            # 演示限速（米/秒），远低于实车能力，安全优先
-_MAX_ANG = 1.5            # 演示最大角速度（弧度/秒）
-_BATTERY_V0 = 12.6        # 满电电压（3S 锂电）
-_BATTERY_MIN = 10.0       # 低电量阈值（伏），低于此值模拟停车返航提示
-
-
-def _build_known_grid() -> list[list[int]]:
-    """把矩形障碍物栅格化为真值地图。1 表示占用，0 表示自由。"""
-    grid = [[0] * _MAP_COLS for _ in range(_MAP_ROWS)]
-    for x0, y0, x1, y1 in _WALLS:
-        c0 = int(x0 / _MAP_RES)
-        c1 = int(x1 / _MAP_RES)
-        r0 = int(y0 / _MAP_RES)
-        r1 = int(y1 / _MAP_RES)
-        for r in range(max(0, r0), min(_MAP_ROWS, r1 + 1)):
-            for c in range(max(0, c0), min(_MAP_COLS, c1 + 1)):
-                grid[r][c] = 1
-    return grid
+_CMD_VEL_TIMEOUT = 0.5    # 手动指令超时（秒）：超时未收到新指令则自动停车
+_BATTERY_MIN = 10.0       # 低电量阈值（伏），仅用于遥测中的 battery_low 提示
 
 
 class BaseBridge:
@@ -102,231 +62,6 @@ class BaseBridge:
 
     def close(self) -> None:
         """释放资源；无外部资源的实现无需覆盖。"""
-
-
-class MockBridge(BaseBridge):
-    """模拟桥接：不依赖 ROS2 的本机演示数据源。
-
-    行为说明：
-    - 激光仿真对真值地图做 DDA 射线步进，同时把走过的格子标为自由、
-      命中点标为占用，写入 explored 栅格，模拟 RTAB-Map 实时建图中
-      “探索区域逐渐扩大”的视觉效果。
-    - cmd_vel 指令带 0.5 秒看门狗：超时自动置零，复刻 ROS2 桥接的安全
-      行为，浏览器断开或卡顿时小车会自动停下。
-    - 手动遥控优先：收到任何非零手动指令即取消自动导航，符合
-      “人工接管优先”的救援安全原则。
-    - 导航控制器是演示级 P 控制器（无真正避障规划），仅用于展示
-      “点击地图下发目标 -> 小车自动行驶”的交互链路。
-    """
-
-    name = "mock"
-
-    def __init__(self) -> None:
-        self._known = _build_known_grid()
-        # explored 栅格：-1 未知 / 0 自由 / 100 占用（与 OccupancyGrid 一致）
-        self._explored = [[-1] * _MAP_COLS for _ in range(_MAP_ROWS)]
-        self._x = 2.5
-        self._y = 2.5
-        self._theta = 0.0
-        self._vx = 0.0
-        self._vy = 0.0
-        self._wz = 0.0
-        self._last_cmd_time = 0.0
-        self._manual = False          # 是否处于手动接管状态
-        self._goal: Optional[tuple[float, float]] = None
-        self._nav_state = "idle"      # idle / navigating / reached / blocked
-        self._battery = _BATTERY_V0
-        self._odo = 0.0               # 累计里程（米）
-        self._ranges = [float("inf")] * _SCAN_RAYS
-        self._map_dirty = True        # 地图是否有未推送的更新
-        self._last_map: Optional[dict] = None  # 缓存最近一帧地图，供新客户端补发
-
-    # ---- 内部工具 ---------------------------------------------------------
-
-    def _occupied(self, x: float, y: float) -> bool:
-        """世界坐标是否命中障碍。越界视为占用，防止穿墙。"""
-        c = int(x / _MAP_RES)
-        r = int(y / _MAP_RES)
-        if c < 0 or c >= _MAP_COLS or r < 0 or r >= _MAP_ROWS:
-            return True
-        return self._known[r][c] == 1
-
-    def _raycast(self, ang: float) -> float:
-        """沿 ang 方向做固定步长射线步进，返回命中距离。
-
-        步长取 0.5 * 分辨率，兼顾精度与 CPU 开销（240 射线 * 10Hz）。
-        命中时同时更新 explored 栅格，模拟实时建图。
-        """
-        step = _MAP_RES * 0.5
-        dx = math.cos(ang) * step
-        dy = math.sin(ang) * step
-        x, y = self._x, self._y
-        dist = 0.0
-        while dist < _SCAN_RANGE_MAX:
-            x += dx
-            y += dy
-            dist += step
-            if self._occupied(x, y):
-                self._mark(x, y, 100)
-                return dist
-            self._mark(x, y, 0)
-        return _SCAN_RANGE_MAX
-
-    def _mark(self, x: float, y: float, value: int) -> None:
-        c = int(x / _MAP_RES)
-        r = int(y / _MAP_RES)
-        if 0 <= c < _MAP_COLS and 0 <= r < _MAP_ROWS:
-            if self._explored[r][c] != value:
-                self._explored[r][c] = value
-                self._map_dirty = True
-
-    def _collide(self, nx: float, ny: float) -> bool:
-        """以机器人中心近似做碰撞检测（演示级，忽略底盘半径）。"""
-        return self._occupied(nx, ny)
-
-    # ---- BaseBridge 接口 --------------------------------------------------
-
-    def tick(self, dt: float) -> None:
-        now = time.monotonic()
-
-        # 手动指令看门狗：超时未收到新指令则速度归零
-        if self._manual and now - self._last_cmd_time > _CMD_VEL_TIMEOUT:
-            self._vx = self._vy = self._wz = 0.0
-            self._manual = False
-
-        # 演示级导航控制器：P 控制器，前方 0.6m 内有障碍则停车
-        if self._goal is not None:
-            gx, gy = self._goal
-            dx, dy = gx - self._x, gy - self._y
-            dist = math.hypot(dx, dy)
-            if dist < 0.3:
-                self._goal = None
-                self._nav_state = "reached"
-                self._vx = self._vy = self._wz = 0.0
-            else:
-                ang_err = math.atan2(dy, dx) - self._theta
-                ang_err = math.atan2(math.sin(ang_err), math.cos(ang_err))
-                self._wz = max(-1.0, min(1.0, 2.0 * ang_err))
-                front = min(
-                    self._ranges[i]
-                    for i in range(_SCAN_RAYS)
-                    if abs(i - _SCAN_RAYS // 2) < 20
-                )
-                if front < 0.6:
-                    self._vx = self._vy = 0.0
-                    self._nav_state = "blocked"
-                else:
-                    self._vx = min(0.4, 0.6 * dist) * max(
-                        0.0, math.cos(ang_err)
-                    )
-                    self._vy = 0.0
-
-        # 低电量保护：低于阈值停止自动导航并提示
-        if self._battery <= _BATTERY_MIN and self._goal is not None:
-            self._goal = None
-            self._nav_state = "idle"
-            self._vx = self._vy = self._wz = 0.0
-
-        # 位姿积分
-        half = dt * 0.5
-        mid_th = self._theta + self._wz * half
-        nx = self._x + (self._vx * math.cos(mid_th) - self._vy * math.sin(mid_th)) * dt
-        ny = self._y + (self._vx * math.sin(mid_th) + self._vy * math.cos(mid_th)) * dt
-        if not self._collide(nx, ny):
-            self._odo += math.hypot(nx - self._x, ny - self._y)
-            self._x, self._y = nx, ny
-        else:
-            # 撞墙：停车并取消导航，避免演示中穿模
-            self._vx = self._vy = self._wz = 0.0
-            self._goal = None
-            if self._nav_state == "navigating":
-                self._nav_state = "blocked"
-        self._theta = math.atan2(
-            math.sin(self._theta + self._wz * dt),
-            math.cos(self._theta + self._wz * dt),
-        )
-
-        # 激光扫描（同时完成 explored 栅格更新）
-        for i in range(_SCAN_RAYS):
-            ang = self._theta + math.pi + 2.0 * math.pi * i / _SCAN_RAYS
-            self._ranges[i] = self._raycast(ang)
-
-        # 电量按运动强度缓降，静止时极慢自放电
-        drain = (abs(self._vx) + abs(self._vy) + abs(self._wz) * 0.5) * dt
-        self._battery = max(9.5, self._battery - drain * 0.004 - dt * 1e-5)
-
-    def telemetry(self) -> dict:
-        return {
-            "type": "telemetry",
-            "bridge": self.name,
-            "pose": {"x": round(self._x, 3), "y": round(self._y, 3),
-                     "theta": round(self._theta, 3)},
-            "twist": {"vx": round(self._vx, 3), "vy": round(self._vy, 3),
-                      "wz": round(self._wz, 3)},
-            "battery": round(self._battery, 2),
-            "battery_low": self._battery <= _BATTERY_MIN,
-            "chassis_enabled": self._battery > 9.5,
-            "odometry": round(self._odo, 1),
-            "nav_state": self._nav_state,
-            "nav_goal": ({"x": self._goal[0], "y": self._goal[1]}
-                         if self._goal else None),
-            "manual": self._manual,
-            "scan": {
-                "angle_min": round(math.pi, 4),
-                "angle_max": round(-math.pi, 4),
-                "range_max": _SCAN_RANGE_MAX,
-                # 无穷大在 JSON 中不合法，超出量程用 -1 表示（与 ROS 约定一致）
-                "ranges": [(-1 if r == _SCAN_RANGE_MAX else round(r, 2))
-                           for r in self._ranges],
-            },
-        }
-
-    def map_message(self, force: bool = False) -> Optional[dict]:
-        """返回 RLE 压缩的占用栅格；无更新且未强制时返回 None。
-
-        explored 栅格大部分区域是连续的 -1（未知），行程编码（RLE）后
-        通常只有几千字节，1Hz 推送对局域网带宽无压力。force=True 用于
-        新客户端连接时补发缓存帧。
-        """
-        if not self._map_dirty and not (force and self._last_map):
-            return None
-        if not self._map_dirty and force:
-            return self._last_map
-        self._map_dirty = False
-        flat = []
-        for row in self._explored:
-            flat.extend(row)
-        self._last_map = {
-            "type": "map",
-            "width": _MAP_COLS,
-            "height": _MAP_ROWS,
-            "resolution": _MAP_RES,
-            "origin": [0.0, 0.0],
-            "rle": _rle_encode(flat),
-        }
-        return self._last_map
-
-    def cmd_vel(self, vx: float, vy: float, wz: float) -> None:
-        """手动遥控入口。非零指令会取消自动导航（人工接管优先）。"""
-        self._vx = max(-_MAX_LIN, min(_MAX_LIN, vx))
-        self._vy = max(-_MAX_LIN, min(_MAX_LIN, vy))
-        self._wz = max(-_MAX_ANG, min(_MAX_ANG, wz))
-        self._last_cmd_time = time.monotonic()
-        self._manual = abs(vx) + abs(vy) + abs(wz) > 1e-6
-        if self._manual and self._goal is not None:
-            self._goal = None
-            self._nav_state = "idle"
-
-    def nav_goal(self, x: float, y: float) -> None:
-        if not (0 < x < _MAP_W_M and 0 < y < _MAP_H_M):
-            return
-        self._goal = (x, y)
-        self._nav_state = "navigating"
-
-    def cancel_nav(self) -> None:
-        self._goal = None
-        self._nav_state = "idle"
-        self._vx = self._vy = self._wz = 0.0
 
 
 class RosBridge(BaseBridge):
@@ -368,8 +103,8 @@ class RosBridge(BaseBridge):
         except ImportError as exc:
             raise RuntimeError(
                 "ROS2 桥接需要 rclpy（目标机 Ubuntu 22.04 + ROS2 Humble，"
-                "需先 source /opt/ros/humble/setup.bash）。"
-                "演示模式请设置 RESCUE_BRIDGE=mock。"
+                "需先 source /opt/ros/humble/setup.bash 与 colcon 工作空间"
+                "的 install/setup.bash，再启动本服务）。"
             ) from exc
 
         from geometry_msgs.msg import Twist
@@ -510,8 +245,8 @@ class RosBridge(BaseBridge):
     # ---- BaseBridge 接口（事件循环内调用）----
 
     def tick(self, dt: float) -> None:
-        # 看门狗：与 MockBridge 语义一致。wheeltec_robot_node 自身也有
-        # 0.5s 超时停车，这里是网关侧的第二层保护。
+        # 看门狗：wheeltec_robot_node 自身也有 0.5s 超时停车，
+        # 这里是网关侧的第二层保护（浏览器断开/卡顿同样触发）。
         if self._manual and time.monotonic() - self._last_cmd > _CMD_VEL_TIMEOUT:
             self._publish_cmd(0.0, 0.0, 0.0)
             self._manual = False
@@ -678,10 +413,10 @@ def _rle_encode(flat: list) -> list:
 
 
 def create_bridge() -> BaseBridge:
-    """按环境变量选择桥接实现，默认 mock（本机 Demo）。"""
-    import os
+    """创建桥接实例。当前仅有面向目标机 ROS2 的实现。
 
-    kind = os.environ.get("RESCUE_BRIDGE", "mock").lower()
-    if kind == "ros":
-        return RosBridge()
-    return MockBridge()
+    构造 RosBridge 会初始化 rclpy 节点并启动 spin 线程；若环境未 source
+    ROS2，此处会抛出带中文说明的 RuntimeError，由调用方（app.py）在启动时
+    直接暴露给运维人员。
+    """
+    return RosBridge()

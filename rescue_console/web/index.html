@@ -59,7 +59,7 @@
 </head>
 <body>
   <div id="map-panel">
-    <h1>厂房救援控制台 · 实时建图（Demo：模拟数据源）</h1>
+    <h1>厂房救援控制台 · 实时建图（ROS2 真实话题）</h1>
     <div id="map-wrapper">
       <canvas id="map"></canvas>
       <div id="map-hint">点击地图：下发导航目标 · 深灰=未知 · 浅灰=已探索 · 黑=障碍</div>
@@ -107,8 +107,9 @@
       <div id="nav-state">空闲</div>
       <button class="act" id="btn-cancel">取消导航并停车</button>
       <div class="hint">
-        点击左侧地图任意位置下发目标点，机器人自动行驶（Demo 为演示级
-        P 控制器，无真正避障规划；实车由 Nav2 规划）。
+        点击左侧地图任意位置下发目标点，由 Nav2 规划路径并自动行驶。
+        下发前请确认 slam_navigation.launch.py 已运行且 Nav2 生命周期节点
+        为 active。
       </div>
     </div>
 
@@ -126,7 +127,7 @@
 <script>
 "use strict";
 /* ======================================================================
- * 厂房救援控制台前端（Demo）
+ * 厂房救援控制台前端（接 RosBridge 真实 ROS2 话题）
  * 协议约定（与 server/app.py 一致）：
  *   WS  /ws/telemetry  服务端推送：
  *     {type:"telemetry", pose, twist, battery, chassis_enabled, nav_state, scan}
@@ -195,7 +196,7 @@ function onTelemetry(m) {
     trajectory.push([p.x, p.y]);
     if (trajectory.length > 2000) trajectory.shift();
   }
-  $("v-bridge").textContent = m.bridge === "mock" ? "模拟 (Demo)" : m.bridge;
+  $("v-bridge").textContent = m.bridge === "ros" ? "ROS2" : m.bridge;
   const en = $("v-enable");
   en.textContent = m.chassis_enabled ? "使能" : "禁用";
   en.className = "v " + (m.chassis_enabled ? "" : "warn");
