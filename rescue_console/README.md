@@ -47,6 +47,7 @@ cd ~/mini_car_ws/rescue_console/server
 | 手动遥控 | W/S/A/D/Q/E 或按住屏幕按钮 | 前后/转向/平移，10Hz 心跳发送 |
 | 紧急停车 | 「停」按钮 | 取消导航并立即发送零速度 |
 | 导航目标 | 点击地图 | 由 Nav2 规划路径并驱动底盘 |
+| 实时画面 | 自动 | MJPEG 播放 `/camera/color/image_raw`，限流 10fps |
 | 状态面板 | 自动 | 电池（低电量告警）、位姿、速度、里程、底盘使能 |
 
 ## 4. 网关协议
@@ -59,6 +60,10 @@ cd ~/mini_car_ws/rescue_console/server
 | POST | /api/cmd_vel | {vx, vy, wz} | 米/秒、弧度/秒；0.5s 无新指令自动停车 |
 | POST | /api/nav_goal | {x, y} | 地图坐标（米） |
 | POST | /api/cancel_nav | - | 取消导航并停车 |
+| GET | /video/stream | - | MJPEG 彩色画面（`multipart/x-mixed-replace`），前端 `<img src>` 直接播放 |
+
+`/api/status` 额外返回 `video` 字段（`topic` / `fps` / `encoding` / `has_frame` /
+`error`），用于在目标机排查"画面黑屏"是相机没启动、话题名不对，还是编码不支持。
 
 ### 4.2 WebSocket `/ws/telemetry`
 
@@ -162,19 +167,24 @@ QoS，兼容 latched 地图）与 TF；发布 `/cmd_vel`；导航目标走 Nav2
 - **接实车前必须车轮悬空或场地清空**，且确认硬件急停可用。
 - KCF 与 Nav2 与本客户端三方都发布 /cmd_vel，接实车前必须加 twist_mux 仲裁。
 - 服务绑定 0.0.0.0 且无鉴权，仅限可信局域网使用；跨网段暴露需自加反向代理与认证。
-- 视频回传未实现，页面为占位块；后续可加 MJPEG（/camera/color/image_raw）。
+- 实时画面仅支持 rgb8 / bgr8 未压缩编码（Pillow 解码）。若相机发布 mjpeg
+  等压缩格式，页面会显示明确的编码错误，此时改用 cv_bridge：
+  `apt install ros-humble-cv-bridge`（需同步改造 bridge.py 的 _encode_jpeg）。
 
 ## 7. 已验证 / 待验证
 
 | 项目 | 状态 |
 | --- | --- |
 | Python 语法（bridge.py / app.py） | 已验证（ast.parse） |
+| `_encode_jpeg` 参数传递与错误分支 | 已验证（桩对象单测：rgb8/bgr8 映射、`step` 作 stride、不支持编码的提示） |
+| 实际 JPEG 编码与画面显示 | **待目标机验证**（开发机无法访问 PyPI，未装 Pillow） |
 | 5Hz 遥测推送、RLE 地图推送、首连补发 | 代码已完成，待目标机验证 |
+| MJPEG 多客户端共享单份编码、10fps 限流 | 代码已完成，待目标机验证 |
 | RosBridge（rclpy 实装） | 代码已完成，**待目标机实车验证**（按 AGENTS.md 分层验收） |
 | 源码运行流程（git pull + venv + uvicorn） | 待目标机验证 |
 | deploy/install.sh（可选 systemd） | 语法已检查，未实际执行 |
 | NavigateToPose action 交互、TF 位姿、激光偏移 | 待目标机验证 |
-| 视频回传、twist_mux | 未实现，后续迭代 |
+| twist_mux 仲裁 | 未实现，接实车前必须补上 |
 
 > 说明：由于桥接层固定依赖 rclpy，**本服务无法在开发机（Windows，无 ROS2）
 > 上做任何运行期自检**，全部运行时验证需在目标机完成。

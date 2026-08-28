@@ -35,6 +35,12 @@ from typing import Optional
 _CMD_VEL_TIMEOUT = 0.5    # 手动指令超时（秒）：超时未收到新指令则自动停车
 _BATTERY_MIN = 10.0       # 低电量阈值（伏），仅用于遥测中的 battery_low 提示
 
+# 视频回传（MJPEG over HTTP）
+_VIDEO_TOPIC = "/camera/color/image_raw"  # Astra Pro 彩色流（astra_pro.launch.py）
+_VIDEO_FPS = 10           # 转发帧率上限：相机原始 30fps 会挤占 CPU 与带宽
+_JPEG_QUALITY = 80        # JPEG 质量，640x480 下单帧约 30~60 KB
+_VIDEO_ENCODINGS = {"rgb8": "RGB", "bgr8": "BGR"}  # 支持的 ROS 图像编码->Pillow 原始模式
+
 
 class BaseBridge:
     """桥接接口。所有方法必须线程安全或仅在事件循环内调用。"""
@@ -60,6 +66,14 @@ class BaseBridge:
     def cancel_nav(self) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    def video_frame(self) -> Optional[tuple]:  # pragma: no cover
+        """最新一帧 JPEG，返回 (序号, 字节串)；暂无帧时返回 None。"""
+        raise NotImplementedError
+
+    def video_status(self) -> dict:  # pragma: no cover
+        """视频回传状态，供 /api/status 排障用。"""
+        raise NotImplementedError
+
     def close(self) -> None:
         """释放资源；无外部资源的实现无需覆盖。"""
 
@@ -69,12 +83,15 @@ class RosBridge(BaseBridge):
 
     数据通路（与 docs/AGENT_HANDOFF.md 第 7 节话题契约一致）：
       订阅 /odom /PowerVoltage /chassis_enabled /scan /map /tf
+      订阅 /camera/color/image_raw（Astra Pro 彩色流，转 JPEG 供网页 MJPEG 播放）
       发布 /cmd_vel（geometry_msgs/msg/Twist）
       导航目标走 Nav2 bt_navigator 的 NavigateToPose action，
       支持结果回调（到达/失败/取消）与取消。
 
     线程模型：
       rclpy.spin 在独立守护线程运行，订阅回调只更新缓存；
+      图像编码在独立线程按 _VIDEO_FPS 限流进行，编码一次后写入共享缓存，
+      所有 HTTP 客户端读同一份 JPEG，避免每路连接重复编码；
       FastAPI 事件循环只读缓存或调用 action/publisher，线程安全。
 
     位姿来源：优先查 TF map -> base_footprint（含 RTAB-Map 修正），
@@ -89,6 +106,9 @@ class RosBridge(BaseBridge):
         手动遥控与自动导航不得同时进行（手动输入会先取消 Nav2 目标）。
       - /map 的 RLE 编码在 Python 中逐格进行，RTAB-Map 大地图（>1M 格）
         单帧编码耗时约 0.1~0.3 秒，会短暂阻塞事件循环，属可接受范围。
+      - 视频仅支持 rgb8 / bgr8 未压缩编码（用 Pillow 解码）；若相机话题是
+        mjpeg 等压缩格式，会在 video_status().error 中给出明确提示，此时需
+        改用 cv_bridge（apt install ros-humble-cv-bridge）。
     """
 
     name = "ros"
@@ -117,7 +137,7 @@ class RosBridge(BaseBridge):
             ReliabilityPolicy,
             qos_profile_sensor_data,
         )
-        from sensor_msgs.msg import LaserScan
+        from sensor_msgs.msg import Image, LaserScan
         from std_msgs.msg import Bool, Float32
         from tf2_ros import Buffer, TransformListener
 
@@ -147,6 +167,13 @@ class RosBridge(BaseBridge):
         self._nav_state = "idle"
         self._odo = 0.0
         self._odo_prev = None
+        # 视频：_image_raw 由订阅回调写入（只保留最新一帧），编码线程取走后
+        # 置空，避免积压旧帧；_jpeg 为编码结果，供所有 HTTP 客户端共享
+        self._image_raw = None
+        self._jpeg: Optional[tuple] = None
+        self._jpeg_seq = 0
+        self._video_error: Optional[str] = None
+        self._video_encoding: Optional[str] = None
 
         rclpy.init()
         node = rclpy.create_node("rescue_gateway")
@@ -165,6 +192,10 @@ class RosBridge(BaseBridge):
         node.create_subscription(LaserScan, "/scan", self._cb_scan,
                                  qos_profile_sensor_data)
         node.create_subscription(OccupancyGrid, "/map", self._cb_map, map_qos)
+        # 图像用 sensor data QoS（best effort），与相机发布端一致；
+        # 队列深度取 1：只关心最新一帧，丢帧比积压旧帧更符合实时遥操
+        node.create_subscription(Image, _VIDEO_TOPIC, self._cb_image,
+                                 qos_profile_sensor_data)
 
         self._pub_cmd = node.create_publisher(Twist, "/cmd_vel", 10)
         self._tf_buffer = Buffer()
@@ -178,7 +209,24 @@ class RosBridge(BaseBridge):
         )
         self._spin_thread.start()
 
+        # 图像编码线程：按 _VIDEO_FPS 限流，与相机 30fps 解耦，
+        # 避免编码占满 CPU 或把 30fps 全量推给浏览器
+        self._encode_thread = threading.Thread(
+            target=self._encode_loop, daemon=True,
+            name="rescue-gateway-video",
+        )
+        self._encode_thread.start()
+
     # ---- 订阅回调（spin 线程内执行）----
+
+    def _cb_image(self, msg) -> None:
+        """缓存最新一帧原始图像。编码由 _encode_loop 在此之后异步完成。
+
+        这里只做引用赋值（不加锁）：CPython 下对象引用赋值是原子的，
+        且编码线程取走后立即置空，最坏情况是丢掉一帧，不影响正确性。
+        """
+        self._image_raw = msg
+        self._video_encoding = msg.encoding
 
     def _cb_odom(self, msg) -> None:
         import math
@@ -241,6 +289,81 @@ class RosBridge(BaseBridge):
             self._nav_state = "navigating"
         else:
             self._nav_state = "failed"
+
+    # ---- 视频编码（独立线程内执行）----
+
+    def _encode_loop(self) -> None:
+        """按固定间隔把最新原始帧编码为 JPEG，写入所有客户端共享的缓存。
+
+        设计取舍：
+        - 编码放在独立线程而非订阅回调，避免 10ms 量级的编码耗时阻塞
+          rclpy.spin，影响 /scan、/odom 等高频订阅的及时性。
+        - 编码一次、多端共享：N 个浏览器只付一次编码成本。
+        - 取走 _image_raw 后立即置空，天然丢弃积压的旧帧，保证遥操画面
+          始终是“最新”而不是“最旧”。
+        """
+        try:
+            from PIL import Image as PILImage
+        except ImportError:
+            self._video_error = (
+                "缺少 Pillow，无法编码视频。请在 venv 内执行："
+                "pip install Pillow"
+            )
+            return
+
+        import io
+
+        period = 1.0 / _VIDEO_FPS
+        while not self._closed:
+            msg = self._image_raw
+            self._image_raw = None
+            if msg is not None:
+                try:
+                    self._jpeg = (
+                        self._jpeg_seq,
+                        self._encode_jpeg(PILImage, io, msg),
+                    )
+                    self._jpeg_seq += 1
+                    self._video_error = None
+                except Exception as exc:
+                    # 编码失败不重试、不刷屏：保留首条错误供 /api/status 排障
+                    if self._video_error is None:
+                        self._video_error = f"{type(exc).__name__}: {exc}"
+            time.sleep(period)
+
+    def _encode_jpeg(self, pil_image, io_mod, msg) -> bytes:
+        """把 sensor_msgs/Image 编码为 JPEG 字节串（仅支持 rgb8 / bgr8）。"""
+        raw_mode = _VIDEO_ENCODINGS.get(msg.encoding)
+        if raw_mode is None:
+            supported = " / ".join(sorted(_VIDEO_ENCODINGS))
+            raise ValueError(
+                f"不支持的图像编码 '{msg.encoding}'（Pillow 路径仅支持 "
+                f"{supported}）。请改用 cv_bridge 解码："
+                f"apt install ros-humble-cv-bridge"
+            )
+        # msg.step 可能大于 width*3（行对齐填充），必须作为 stride 传入，
+        # 否则图像会错位或撕裂
+        img = pil_image.frombytes(
+            "RGB", (msg.width, msg.height), bytes(msg.data),
+            "raw", raw_mode, msg.step, 1,
+        )
+        buf = io_mod.BytesIO()
+        img.save(buf, format="JPEG", quality=_JPEG_QUALITY)
+        return buf.getvalue()
+
+    def video_frame(self) -> Optional[tuple]:
+        """最新一帧 JPEG，返回 (序号, 字节串)；暂无帧时返回 None。"""
+        return self._jpeg
+
+    def video_status(self) -> dict:
+        """视频回传状态，供 /api/status 在目标机排障（尤其是编码不匹配）。"""
+        return {
+            "topic": _VIDEO_TOPIC,
+            "fps": _VIDEO_FPS,
+            "encoding": self._video_encoding,
+            "has_frame": self._jpeg is not None,
+            "error": self._video_error,
+        }
 
     # ---- BaseBridge 接口（事件循环内调用）----
 
@@ -374,7 +497,11 @@ class RosBridge(BaseBridge):
         self._publish_cmd(0.0, 0.0, 0.0)
 
     def close(self) -> None:
-        """服务退出时清理 rclpy 资源（spin 线程为守护线程，随进程结束）。"""
+        """服务退出时清理 rclpy 资源（spin/编码线程为守护线程，随进程结束）。
+
+        置 _closed 后编码线程会在下一次循环中退出；这里不 join，避免
+        FastAPI 关闭流程被最长一个编码周期（1/_VIDEO_FPS 秒）阻塞。
+        """
         if self._closed:
             return
         self._closed = True

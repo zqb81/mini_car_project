@@ -19,6 +19,7 @@
   POST /api/nav_goal         导航目标 {x, y}，地图坐标（米）
   POST /api/cancel_nav       取消导航并停车
   WS   /ws/telemetry         遥测推送：telemetry 5Hz + 地图约 1Hz（有更新时）
+  GET  /video/stream         MJPEG 彩色画面（/camera/color/image_raw，限流 10fps）
 
 安全约束（与 AGENTS.md 一致）：
   - 手动遥控带 0.5 秒看门狗，客户端断开即自动停车；
@@ -33,7 +34,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from bridge import BaseBridge, create_bridge
@@ -127,7 +128,42 @@ async def status() -> dict:
         "clients": len(_clients),
         "uptime_s": round(time.time() - _started_at, 1),
         "note": "ROS2 桥接（真实话题）",
+        "video": bridge.video_status(),
     }
+
+
+async def _mjpeg_chunks():
+    """MJPEG 分帧字节块异步生成器（multipart/x-mixed-replace）。
+
+    按帧序号去重：同一帧只推一次，所有客户端复用同一份 JPEG 缓存，
+    因此 N 个浏览器只付一次编码成本。无新帧时不发送任何数据，避免
+    用重复帧空耗带宽。
+
+    必须是异步生成器：无新帧时 await 让出事件循环，否则同步 while True
+    会变成忙循环吃满一个 CPU 核。
+    """
+    last_seq = -1
+    while True:
+        frame = bridge.video_frame()
+        if frame is not None and frame[0] != last_seq:
+            seq, jpeg = frame
+            last_seq = seq
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n"
+                   b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n"
+                   b"\r\n" + jpeg + b"\r\n")
+        else:
+            # 20ms 轮询，短于编码周期（1/_VIDEO_FPS），保证新帧及时取到
+            await asyncio.sleep(0.02)
+
+
+@app.get("/video/stream")
+async def video_stream():
+    """彩色实时画面（MJPEG）。前端用 <img src="/video/stream"> 直接播放。"""
+    return StreamingResponse(
+        _mjpeg_chunks(),
+        media_type="multipart/x-mixed-replace;boundary=frame",
+    )
 
 
 @app.post("/api/cmd_vel")

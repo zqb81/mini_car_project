@@ -114,12 +114,12 @@
     </div>
 
     <div class="card">
-      <h2>视频回传</h2>
-      <div id="video-placeholder"
-           style="height:120px;display:flex;align-items:center;justify-content:center;
-                  color:#4a5566;font-size:12px;
-                  border:1px dashed #2a3444;border-radius:6px;">
-        占位：接 ROS2 桥接后显示 /camera/color/image_raw
+      <h2>实时画面</h2>
+      <!-- MJPEG 流：浏览器原生解码，img 标签即可播放，无需前端解码逻辑 -->
+      <img id="video" src="/video/stream" alt="彩色实时画面"
+           style="width:100%;border-radius:6px;background:#0d1117;display:block;">
+      <div id="video-status" style="margin-top:6px;font-size:12px;color:#4a5566;">
+        正在连接画面…
       </div>
     </div>
   </div>
@@ -383,6 +383,31 @@ canvas.addEventListener("click", ev => {
   postJSON("/api/nav_goal", {x, y});
 });
 $("btn-cancel").addEventListener("click", () => postJSON("/api/cancel_nav", {}));
+
+/* ---------- 视频状态（目标机排障用） ----------
+ * MJPEG 流建立连接后，即使服务端一帧都没编码出来，img 也只是空白而不报错，
+ * 很难判断是相机没启动、话题名不对，还是编码不支持。因此轮询 /api/status
+ * 的 video 字段，把服务端的实际编码与错误信息直接显示出来。 */
+let videoTimer = null;
+async function refreshVideoStatus() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    const v = s.video || {};
+    const el = $("video-status");
+    if (v.error) {
+      el.textContent = "画面异常：" + v.error;
+      el.style.color = "#ff6b6b";
+      clearInterval(videoTimer);   // 编码错误不会自行恢复，停止轮询
+    } else if (v.has_frame) {
+      el.textContent = `${v.topic} · ${v.encoding} · ${v.fps}fps`;
+      clearInterval(videoTimer);   // 已出画，无需再查
+    } else {
+      el.textContent = `等待图像… ${v.topic}`;
+    }
+  } catch (e) { /* 状态查询失败不影响遥操主流程 */ }
+}
+refreshVideoStatus();
+videoTimer = setInterval(refreshVideoStatus, 3000);
 
 /* ---------- 启动 ---------- */
 resizeCanvas();

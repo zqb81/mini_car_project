@@ -1,3 +1,5 @@
 fastapi>=0.110,<0.116
 uvicorn>=0.29,<0.36
 websockets>=12,<15
+# 视频回传：把 /camera/color/image_raw 编码为 JPEG（aarch64 有官方 wheel）
+Pillow>=10.0,<12.0
