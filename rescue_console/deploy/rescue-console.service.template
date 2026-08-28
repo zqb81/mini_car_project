@@ -1,0 +1,31 @@
+# 救援控制台网关 systemd 服务模板
+#
+# 用途：由 deploy/install.sh 自动把 __USER__ / __HOME__ / __APP_DIR__
+# 替换为实际值后安装到 /etc/systemd/system/rescue-console.service。
+# 不要手工复制本文件；需要调整时改模板后重新执行 install.sh。
+#
+# 桥接模式说明：
+#   RESCUE_BRIDGE=ros  接 ROS2 真实话题（需要 slam_navigation.launch.py 在运行）
+#   RESCUE_BRIDGE=mock 模拟数据源（不依赖 ROS，用于部署链路自检）
+
+[Unit]
+Description=Rescue console gateway (FastAPI, mini_car)
+# 网络就绪后再启动，避免绑定 0.0.0.0 失败
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__APP_DIR__/server
+Environment=RESCUE_BRIDGE=ros
+# A1M8 安装朝向偏移（弧度），随车默认 yaw=pi，实测后覆盖（README 16.2）
+Environment=RESCUE_LASER_YAW_OFFSET=3.14159265
+# 先 source ROS2 系统环境与工作空间，再启动 venv 内的 uvicorn；
+# venv 只装 Web 依赖，rclpy 等来自系统 ROS，两者互不污染
+ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source __HOME__/mini_car_ws/install/setup.bash && exec __APP_DIR__/venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

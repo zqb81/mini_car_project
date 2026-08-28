@@ -4,6 +4,8 @@
 *.cpp text eol=lf
 *.hpp text eol=lf
 *.py text eol=lf
+# shell 脚本必须为 LF：Windows 上若检出为 CRLF，目标机执行会报解释器错误
+*.sh text eol=lf
 *.xml text eol=lf
 *.launch text eol=lf
 *.yaml text eol=lf

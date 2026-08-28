@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>厂房救援控制台</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #10151c; color: #d8dee9;
+    display: flex; height: 100vh; overflow: hidden;
+  }
+  /* ---------- 左侧：地图 ---------- */
+  #map-panel { flex: 1; display: flex; flex-direction: column; padding: 12px; min-width: 0; }
+  #map-panel h1 { font-size: 15px; font-weight: 600; color: #8ab4f8; margin-bottom: 8px; }
+  #map-wrapper { flex: 1; position: relative; border: 1px solid #2a3444; border-radius: 8px; overflow: hidden; }
+  canvas#map { width: 100%; height: 100%; display: block; cursor: crosshair; }
+  #map-hint {
+    position: absolute; top: 8px; left: 8px; font-size: 12px;
+    color: #6b7686; background: rgba(16,21,28,.75); padding: 4px 8px; border-radius: 4px;
+  }
+  /* ---------- 右侧：控制 ---------- */
+  #side-panel {
+    width: 340px; padding: 12px; display: flex; flex-direction: column; gap: 12px;
+    border-left: 1px solid #2a3444; overflow-y: auto;
+  }
+  .card {
+    background: #161d27; border: 1px solid #2a3444; border-radius: 8px; padding: 12px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; color: #8ab4f8; margin-bottom: 10px; }
+  .kv { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+  .kv .v { color: #a5d6a7; font-family: Consolas, monospace; }
+  .kv .v.warn { color: #e2a3a3; }
+  #conn-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: #e2a3a3; }
+  #conn-dot.ok { background: #7bd88f; }
+  /* 遥控键 */
+  #teleop { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); gap: 6px; justify-content: center; }
+  .tbtn {
+    background: #1e2836; border: 1px solid #35455c; border-radius: 8px; color: #d8dee9;
+    font-size: 15px; cursor: pointer; user-select: none; display: flex;
+    align-items: center; justify-content: center;
+  }
+  .tbtn:active, .tbtn.active { background: #2c4a7c; border-color: #8ab4f8; }
+  .tbtn span { font-size: 11px; color: #6b7686; margin-top: 2px; }
+  #btn-stop { background: #4a1f24; border-color: #7c3a42; color: #ffb4ba; font-weight: 700; }
+  #btn-stop:active { background: #7c2d38; }
+  .hint { font-size: 11px; color: #6b7686; margin-top: 8px; line-height: 1.6; }
+  button.act {
+    width: 100%; padding: 9px; margin-top: 6px; border-radius: 6px; cursor: pointer;
+    background: #1e2836; border: 1px solid #35455c; color: #d8dee9; font-size: 13px;
+  }
+  button.act:hover { background: #2a3a50; }
+  #nav-state { text-align: center; font-size: 13px; padding: 6px; color: #8ab4f8; }
+  .badge { display:inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; }
+  .badge.ok { background:#173622; color:#7bd88f; }
+  .badge.warn { background:#3a1e22; color:#ffb4ba; }
+</style>
+</head>
+<body>
+  <div id="map-panel">
+    <h1>厂房救援控制台 · 实时建图（Demo：模拟数据源）</h1>
+    <div id="map-wrapper">
+      <canvas id="map"></canvas>
+      <div id="map-hint">点击地图：下发导航目标 · 深灰=未知 · 浅灰=已探索 · 黑=障碍</div>
+    </div>
+  </div>
+
+  <div id="side-panel">
+    <div class="card">
+      <h2><span id="conn-dot"></span>连接状态</h2>
+      <div class="kv"><span>网关</span><span class="v" id="v-conn">未连接</span></div>
+      <div class="kv"><span>桥接模式</span><span class="v" id="v-bridge">-</span></div>
+      <div class="kv"><span>底盘使能</span><span class="v" id="v-enable">-</span></div>
+    </div>
+
+    <div class="card">
+      <h2>机器人状态</h2>
+      <div class="kv"><span>电池电压</span><span class="v" id="v-batt">-</span></div>
+      <div class="kv"><span>位姿 x / y / θ</span><span class="v" id="v-pose">-</span></div>
+      <div class="kv"><span>速度 vx / vy / ω</span><span class="v" id="v-twist">-</span></div>
+      <div class="kv"><span>累计里程</span><span class="v" id="v-odo">-</span></div>
+      <div class="kv"><span>控制模式</span><span class="v" id="v-mode">-</span></div>
+    </div>
+
+    <div class="card">
+      <h2>手动遥控（W/S 前后 · A/D 转向 · Q/E 平移）</h2>
+      <div id="teleop">
+        <div></div>
+        <div class="tbtn" data-k="w">W</div>
+        <div></div>
+        <div class="tbtn" data-k="q">Q</div>
+        <div class="tbtn" data-k="s">S</div>
+        <div class="tbtn" data-k="e">E</div>
+        <div class="tbtn" data-k="a">A</div>
+        <div class="tbtn" id="btn-stop">停</div>
+        <div class="tbtn" data-k="d">D</div>
+      </div>
+      <div class="hint">
+        按住按钮或键盘持续发送指令（10Hz），松开后网关 0.5s 看门狗自动停车。
+        任何手动输入会取消自动导航（人工接管优先）。
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>导航</h2>
+      <div id="nav-state">空闲</div>
+      <button class="act" id="btn-cancel">取消导航并停车</button>
+      <div class="hint">
+        点击左侧地图任意位置下发目标点，机器人自动行驶（Demo 为演示级
+        P 控制器，无真正避障规划；实车由 Nav2 规划）。
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>视频回传</h2>
+      <div id="video-placeholder"
+           style="height:120px;display:flex;align-items:center;justify-content:center;
+                  color:#4a5566;font-size:12px;
+                  border:1px dashed #2a3444;border-radius:6px;">
+        占位：接 ROS2 桥接后显示 /camera/color/image_raw
+      </div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+/* ======================================================================
+ * 厂房救援控制台前端（Demo）
+ * 协议约定（与 server/app.py 一致）：
+ *   WS  /ws/telemetry  服务端推送：
+ *     {type:"telemetry", pose, twist, battery, chassis_enabled, nav_state, scan}
+ *     {type:"map", width, height, resolution, origin, rle}
+ *   POST /api/cmd_vel /api/nav_goal /api/cancel_nav
+ * ====================================================================== */
+
+const $ = id => document.getElementById(id);
+const canvas = $("map");
+const ctx = canvas.getContext("2d");
+
+/* ---------- 世界坐标 <-> 画布像素 ----------
+ * 世界: 米, 原点左下, x 向右 y 向上（ROS 约定）
+ * 画布: 像素, 原点左上, y 向下
+ * 地图尺寸由服务端 map 消息给出，视图自动缩放铺满画布。 */
+let view = { cols: 400, rows: 320, res: 0.05, ox: 0, oy: 0, scale: 10 };
+
+function resizeCanvas() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  canvas.width = Math.floor(r.width);
+  canvas.height = Math.floor(r.height);
+}
+window.addEventListener("resize", resizeCanvas);
+
+function worldToPx(x, y) {
+  return [ (x - view.ox) * view.scale, canvas.height - (y - view.oy) * view.scale ];
+}
+function pxToWorld(px, py) {
+  return [ px / view.scale + view.ox, (canvas.height - py) / view.scale + view.oy ];
+}
+
+/* ---------- 状态 ---------- */
+let mapGrid = null;          // Uint8Array，渲染用：-1->2(未知) 0->0 100->1
+let latest = null;           // 最近一帧遥测
+let trajectory = [];         // 轨迹点（世界坐标）
+const keys = {};             // 手动按键状态
+
+/* ---------- WebSocket ---------- */
+let ws = null, reconnectTimer = null;
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss://" : "ws://";
+  ws = new WebSocket(proto + location.host + "/ws/telemetry");
+  ws.onopen = () => {
+    $("v-conn").textContent = "已连接";
+    $("conn-dot").classList.add("ok");
+  };
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "telemetry") onTelemetry(msg);
+    else if (msg.type === "map") onMap(msg);
+  };
+  ws.onclose = () => {
+    $("v-conn").textContent = "已断开，重连中…";
+    $("conn-dot").classList.remove("ok");
+    reconnectTimer = setTimeout(connect, 2000);
+  };
+  ws.onerror = () => ws.close();
+}
+
+function onTelemetry(m) {
+  latest = m;
+  const p = m.pose, t = m.twist;
+  const last = trajectory[trajectory.length - 1];
+  if (!last || Math.hypot(last[0]-p.x, last[1]-p.y) > 0.1) {
+    trajectory.push([p.x, p.y]);
+    if (trajectory.length > 2000) trajectory.shift();
+  }
+  $("v-bridge").textContent = m.bridge === "mock" ? "模拟 (Demo)" : m.bridge;
+  const en = $("v-enable");
+  en.textContent = m.chassis_enabled ? "使能" : "禁用";
+  en.className = "v " + (m.chassis_enabled ? "" : "warn");
+  const batt = $("v-batt");
+  if (m.battery == null) {
+    batt.textContent = "-（未收到电压）";
+    batt.className = "v warn";
+  } else {
+    batt.textContent = m.battery.toFixed(2) + " V" + (m.battery_low ? "（低电量）" : "");
+    batt.className = "v " + (m.battery_low ? "warn" : "");
+  }
+  $("v-pose").textContent =
+    `${p.x.toFixed(2)} m / ${p.y.toFixed(2)} m / ${(p.theta*180/Math.PI).toFixed(0)}°`;
+  $("v-twist").textContent = `${t.vx.toFixed(2)} / ${t.vy.toFixed(2)} / ${t.wz.toFixed(2)}`;
+  $("v-odo").textContent = m.odometry.toFixed(1) + " m";
+  $("v-mode").textContent = m.manual ? "手动" : (m.nav_goal ? "自动导航" : "待机");
+
+  const st = { idle:"空闲", navigating:"导航中…", reached:"已到达目标", blocked:"受阻（前方障碍）",
+               rejected:"目标被拒绝", canceled:"已取消", failed:"导航失败",
+               nav2_unavailable:"Nav2 未运行（先启动 slam_navigation.launch.py）" };
+  let s = st[m.nav_state] || m.nav_state;
+  if (m.nav_goal) s += ` → (${m.nav_goal.x.toFixed(1)}, ${m.nav_goal.y.toFixed(1)})`;
+  $("nav-state").textContent = s;
+}
+
+function onMap(m) {
+  view.cols = m.width; view.rows = m.height;
+  view.res = m.resolution; view.ox = m.origin[0]; view.oy = m.origin[1];
+  if (!mapGrid || mapGrid.length !== m.width * m.height) {
+    mapGrid = new Uint8Array(m.width * m.height).fill(2);
+  }
+  // RLE 解码：[count, value] 序列 -> 栅格（未知用 2 存储，方便渲染区分）
+  let idx = 0;
+  for (const [count, value] of m.rle) {
+    const v = value < 0 ? 2 : (value > 50 ? 1 : 0);
+    mapGrid.fill(v, idx, idx + count);
+    idx += count;
+  }
+  // 画布尺寸变化时重算缩放，保持地图完整可见（像素/米）
+  resizeCanvas();
+  view.scale = Math.min(canvas.width / (m.width * m.res),
+                        canvas.height / (m.height * m.res));
+}
+
+/* ---------- 渲染循环（30FPS） ---------- */
+function draw() {
+  requestAnimationFrame(draw);
+  if (!latest) return;
+  ctx.fillStyle = "#0d1117";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (mapGrid) {
+    // 栅格渲染：未知格不画（背景即未知），自由格浅灰，占用格深黑
+    const cs = Math.max(1, view.scale * view.res); // 单元格像素
+    // 地图左上角对应的画布像素（行 0 在上方，对应栅格最后一行）
+    const mx0 = (view.ox) * view.scale;
+    const my0 = canvas.height - (view.oy + view.rows * view.res) * view.scale;
+    for (let r = 0; r < view.rows; r++) {
+      const row = r * view.cols;
+      const y = my0 + (view.rows - 1 - r) * cs;
+      for (let c = 0; c < view.cols; c++) {
+        const v = mapGrid[row + c];
+        if (v === 2) continue;
+        ctx.fillStyle = v === 1 ? "#05070a" : "#39424e";
+        ctx.fillRect(mx0 + c * cs, y, cs + 0.5, cs + 0.5);
+      }
+    }
+  }
+  // 激光扫描
+  const s = latest.scan;
+  if (s) {
+    ctx.strokeStyle = "rgba(138,180,248,0.5)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const [rx, ry] = worldToPx(latest.pose.x, latest.pose.y);
+    const n = s.ranges.length;
+    for (let i = 0; i < n; i++) {
+      const r = s.ranges[i];
+      if (r < 0) continue; // 超量程
+      const ang = latest.pose.theta - s.angle_min - (s.angle_max - s.angle_min) * i / (n - 1);
+      const [px, py] = worldToPx(
+        latest.pose.x + r * Math.cos(ang), latest.pose.y + r * Math.sin(ang));
+      ctx.moveTo(rx, ry); ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+  // 轨迹
+  if (trajectory.length > 1) {
+    ctx.strokeStyle = "rgba(123,216,143,0.7)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    trajectory.forEach((pt, i) => {
+      const [px, py] = worldToPx(pt[0], pt[1]);
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    });
+    ctx.stroke();
+  }
+  // 导航目标
+  if (latest.nav_goal) {
+    const [gx, gy] = worldToPx(latest.nav_goal.x, latest.nav_goal.y);
+    ctx.strokeStyle = "#ffb74d";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(gx - 8, gy - 8); ctx.lineTo(gx + 8, gy + 8);
+    ctx.moveTo(gx + 8, gy - 8); ctx.lineTo(gx - 8, gy + 8);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(gx, gy, 11, 0, Math.PI * 2); ctx.stroke();
+  }
+  // 机器人（三角形指示朝向）
+  const [rx, ry] = worldToPx(latest.pose.x, latest.pose.y);
+  ctx.save();
+  ctx.translate(rx, ry);
+  ctx.rotate(-latest.pose.theta);
+  ctx.fillStyle = "#7bd88f";
+  ctx.beginPath();
+  ctx.moveTo(12, 0); ctx.lineTo(-8, -8); ctx.lineTo(-8, 8);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+/* ---------- 手动遥控（10Hz 心跳发送） ---------- */
+const LIN = 0.35, ANG = 1.0;
+
+function currentCmd() {
+  return {
+    vx: (keys.w ? LIN : 0) + (keys.s ? -LIN : 0),
+    vy: (keys.q ? LIN : 0) + (keys.e ? -LIN : 0),
+    wz: (keys.a ? ANG : 0) + (keys.d ? -ANG : 0),
+  };
+}
+
+async function postJSON(url, body) {
+  try { await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}); }
+  catch (e) { /* 网络瞬断由看门狗兜底，不打断循环 */ }
+}
+
+/* 遥控心跳：100ms 一帧。有按键按下，或松开后补发 3 帧零速
+ * （确保在服务端 0.5s 看门狗触发前已主动停车），期间持续发送。 */
+let zeroRepeat = 0;
+setInterval(() => {
+  const cmd = currentCmd();
+  const active = cmd.vx || cmd.vy || cmd.wz;
+  if (active) {
+    zeroRepeat = 0;
+    postJSON("/api/cmd_vel", cmd);
+  } else if (zeroRepeat < 3) {
+    zeroRepeat++;
+    postJSON("/api/cmd_vel", cmd);
+  }
+}, 100);
+
+// 键盘
+const KEYMAP = { w:"w", s:"s", a:"a", d:"d", q:"q", e:"e",
+                 arrowup:"w", arrowdown:"s", arrowleft:"a", arrowright:"d" };
+document.addEventListener("keydown", ev => {
+  const k = KEYMAP[ev.key.toLowerCase()];
+  if (!k) return;
+  ev.preventDefault();
+  keys[k] = true;
+});
+document.addEventListener("keyup", ev => {
+  const k = KEYMAP[ev.key.toLowerCase()];
+  if (k) keys[k] = false;
+});
+// 屏幕按钮（按住生效）
+document.querySelectorAll(".tbtn[data-k]").forEach(btn => {
+  const k = btn.dataset.k;
+  const on = ev => { ev.preventDefault(); keys[k] = true; btn.classList.add("active"); };
+  const off = () => { keys[k] = false; btn.classList.remove("active"); };
+  btn.addEventListener("mousedown", on);
+  btn.addEventListener("touchstart", on, {passive:false});
+  ["mouseup","mouseleave","touchend","touchcancel"].forEach(t => btn.addEventListener(t, off));
+});
+$("btn-stop").addEventListener("mousedown", async ev => {
+  ev.preventDefault();
+  keys.w = keys.s = keys.a = keys.d = keys.q = keys.e = false;
+  await postJSON("/api/cancel_nav", {});
+  await postJSON("/api/cmd_vel", {vx:0, vy:0, wz:0});
+});
+
+/* ---------- 点击地图下发导航目标 ---------- */
+canvas.addEventListener("click", ev => {
+  const rect = canvas.getBoundingClientRect();
+  const [x, y] = pxToWorld(ev.clientX - rect.left, ev.clientY - rect.top);
+  postJSON("/api/nav_goal", {x, y});
+});
+$("btn-cancel").addEventListener("click", () => postJSON("/api/cancel_nav", {}));
+
+/* ---------- 启动 ---------- */
+resizeCanvas();
+connect();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
