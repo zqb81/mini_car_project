@@ -213,7 +213,7 @@ sudo apt install \
   ros-humble-robot-state-publisher
 ~~~
 
-RGB-D 相机和激光雷达驱动根据实物型号单独安装。Astra S 的 ROS2 驱动默认话题为：
+本仓库已内置 Astra 相机和 RPLIDAR ROS2 驱动源码；目标机只需通过 `rosdep` 安装系统依赖，无需再次克隆驱动仓库。实物 Astra Pro 默认话题为：
 
 ~~~text
 /camera/color/image_raw

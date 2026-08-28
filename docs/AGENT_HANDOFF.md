@@ -47,7 +47,7 @@ Astra Pro Depth -------> /camera/depth/image_raw    |
 - 仓库：https://gitee.com/qbz23/mini_car_project.git
 - 稳定分支：main
 - ROS2 迁移历史分支：feature/ros2-rtabmap
-- 本文编写前最后一个功能提交：e7f6a82，适配 Astra Pro 彩色 UVC。
+- 当前驱动内置基线提交：3dd8e5f，纳入 Astra 与 RPLIDAR 源码；此前 e7f6a82 完成 Astra Pro 彩色 UVC 适配。
 
 主要目录：
 

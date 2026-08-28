@@ -11,3 +11,8 @@
 *.txt text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
+
+# 保持厂商驱动及其 SDK 的原始格式，避免检出时产生大规模无意义行尾差异。
+src/astra_camera/** -text
+src/astra_camera_msgs/** -text
+src/rplidar_ros/** -text
