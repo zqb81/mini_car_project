@@ -22,12 +22,16 @@ def generate_launch_description():
     nav2_launch = PythonLaunchDescriptionSource(
         os.path.join(nav2_share, "launch", "navigation_launch.py")
     )
+    lidar_launch = PythonLaunchDescriptionSource(
+        os.path.join(package_share, "launch", "rplidar_a1.launch.py")
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("start_base", default_value="true"),
+            DeclareLaunchArgument("start_lidar", default_value="true"),
             DeclareLaunchArgument("model", default_value="mini_mec"),
             DeclareLaunchArgument(
                 "serial_port", default_value="/dev/wheeltec_controller"
@@ -56,6 +60,16 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("scan_topic", default_value="/scan"),
             DeclareLaunchArgument("odom_topic", default_value="/odom"),
+            DeclareLaunchArgument(
+                "lidar_port", default_value="/dev/wheeltec_lidar"
+            ),
+            DeclareLaunchArgument("laser_frame", default_value="laser"),
+            DeclareLaunchArgument("laser_x", default_value="0.06"),
+            DeclareLaunchArgument("laser_y", default_value="0.0"),
+            DeclareLaunchArgument("laser_z", default_value="0.20"),
+            DeclareLaunchArgument("laser_roll", default_value="0.0"),
+            DeclareLaunchArgument("laser_pitch", default_value="0.0"),
+            DeclareLaunchArgument("laser_yaw", default_value="3.14159"),
             IncludeLaunchDescription(
                 base_launch,
                 condition=IfCondition(LaunchConfiguration("start_base")),
@@ -67,6 +81,21 @@ def generate_launch_description():
                     "publish_camera_tf": LaunchConfiguration("publish_camera_tf"),
                     "camera_frame": LaunchConfiguration("camera_frame"),
                     "use_sim_time": use_sim_time,
+                }.items(),
+            ),
+            IncludeLaunchDescription(
+                lidar_launch,
+                condition=IfCondition(LaunchConfiguration("start_lidar")),
+                launch_arguments={
+                    "serial_port": LaunchConfiguration("lidar_port"),
+                    "frame_id": LaunchConfiguration("laser_frame"),
+                    "base_frame": LaunchConfiguration("base_frame"),
+                    "laser_x": LaunchConfiguration("laser_x"),
+                    "laser_y": LaunchConfiguration("laser_y"),
+                    "laser_z": LaunchConfiguration("laser_z"),
+                    "laser_roll": LaunchConfiguration("laser_roll"),
+                    "laser_pitch": LaunchConfiguration("laser_pitch"),
+                    "laser_yaw": LaunchConfiguration("laser_yaw"),
                 }.items(),
             ),
             Node(

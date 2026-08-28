@@ -426,7 +426,45 @@ KCF 与 Nav2 都会发布 /cmd_vel，不能直接同时控制底盘。并行运�
 | 2D 激光雷达 | 平面避障和激光 SLAM | ROS 话题 /scan，需安装硬件驱动 |
 | RGB-D 相机 | 视觉回环、深度障碍和目标跟踪 | 当前 launch 已预留 Astra 话题 |
 
-### 15.2 厂房救援推荐
+### 15.2 RPLIDAR A1M8 接入
+
+当前实机雷达型号为 SLAMTEC RPLIDAR A1M8。它是 2D 激光雷达，使用 115200 bit/s 串口，并通过稳定设备名 /dev/wheeltec_lidar 接入。
+
+先安装官方 ROS2 驱动：
+
+~~~bash
+cd ~/mini_car_ws/src
+git clone -b ros2 https://github.com/Slamtec/rplidar_ros.git
+
+cd ~/mini_car_ws
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --packages-select rplidar_ros --symlink-install
+source install/setup.bash
+~~~
+
+单独验证雷达：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot rplidar_a1.launch.py +  serial_port:=/dev/wheeltec_lidar
+
+ros2 topic hz /scan
+~~~
+
+实时 SLAM 入口默认会启动 A1M8 驱动。Mini 麦克纳姆车型默认采用随车 ROS1 配置的 x=0.06、z=0.20、yaw=3.14159；雷达的实际安装位姿仍必须测量并在 RViz 中复核：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
+  laser_x:=0.06 laser_y:=0.00 laser_z:=0.20 laser_yaw:=3.14159
+~~~
+
+如果已经在另一个终端启动了雷达驱动，必须禁用重复启动：
+
+~~~bash
+ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py start_lidar:=false
+~~~
+
+### 15.3 厂房救援推荐
 
 普通 RGB-D 相机不应作为救援环境唯一的定位或避障传感器。烟尘、黑暗、强逆光、反光金属、热源和水雾都会使深度图或视觉特征退化。建议按预算增加：
 
@@ -439,7 +477,7 @@ KCF 与 Nav2 都会发布 /cmd_vel，不能直接同时控制底盘。并行运�
 
 如果只能增加一种定位相关传感器，优先选择带 IMU 的 3D 激光雷达；如果任务重点是找人，增加热成像相机和气体传感器，但仍保留激光雷达作为避障主传感器。
 
-### 15.3 救援系统安全边界
+### 15.4 救援系统安全边界
 
 该系统适合人在回路的实验和辅助侦察，不应直接视为消防或生命安全认证设备。必须提供人工接管、急停、失联停车、低电量停车、传感器失效降级和通信日志；正式部署前应在烟雾、弱光、反光、狭窄通道和动态障碍物条件下做分级测试。
 
