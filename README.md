@@ -2,6 +2,8 @@
 
 本工程包含 STM32F103VET6 底盘固件、ROS2 底盘串口桥接、KCF RGB-D 目标跟踪，以及 RTAB-Map + Nav2 建图导航配置。
 
+智能体或新开发者接手前，请先阅读 [智能体交接文档](docs/AGENT_HANDOFF.md) 和 [仓库工作约束](AGENTS.md)。
+
 目标环境：
 
 - Ubuntu 22.04
@@ -283,12 +285,22 @@ cp -a \
 
 ~~~bash
 sudo apt update
-sudo apt install -y +  build-essential cmake git +  libgflags-dev libgoogle-glog-dev nlohmann-json3-dev +  libusb-1.0-0-dev +  ros-humble-image-transport +  ros-humble-image-publisher +  ros-humble-image-geometry +  ros-humble-camera-info-manager +  ros-humble-tf2-eigen +  ros-humble-tf2-sensor-msgs
+sudo apt install -y \
+  build-essential cmake git \
+  libgflags-dev libgoogle-glog-dev nlohmann-json3-dev \
+  libusb-1.0-0-dev \
+  ros-humble-image-transport \
+  ros-humble-image-publisher \
+  ros-humble-image-geometry \
+  ros-humble-camera-info-manager \
+  ros-humble-tf2-eigen \
+  ros-humble-tf2-sensor-msgs
 
 mkdir -p ~/camera_dependencies
 cd ~/camera_dependencies
 
-git clone --depth 1 --branch v0.8.0 +  https://github.com/Neargye/magic_enum.git
+git clone --depth 1 --branch v0.8.0 \
+  https://github.com/Neargye/magic_enum.git
 cmake -S magic_enum -B magic_enum/build
 cmake --build magic_enum/build --parallel 1
 sudo cmake --install magic_enum/build
@@ -584,7 +596,7 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py start_lidar:=false
 
 ## 17. 常见问题
 
-### 14.1 串口打不开
+### 17.1 串口打不开
 
 ~~~bash
 ls -l /dev/wheeltec_controller
@@ -594,14 +606,14 @@ sudo usermod -aG dialout $USER
 
 加入 dialout 后需重新登录。
 
-### 14.2 有 /cmd_vel 但小车不动
+### 17.2 有 /cmd_vel 但小车不动
 
 - 等待 STM32 完成约 10 秒 IMU 校准。
 - 检查电池是否高于 10 V。
 - 检查硬件使能开关与 /chassis_enabled。
 - 检查 ROS2 model 与 STM32 电位器档位。
 
-### 14.3 RTAB-Map 没有输出 /map
+### 17.3 RTAB-Map 没有输出 /map
 
 ~~~bash
 ros2 topic hz /camera/color/image_raw
@@ -614,7 +626,7 @@ ros2 run tf2_tools view_frames
 
 RGB、深度和相机内参时间戳无法同步时，rgbd_sync 不会输出有效数据。
 
-### 14.4 Nav2 报 map 或 TF 超时
+### 17.4 Nav2 报 map 或 TF 超时
 
 检查 map -> odom -> base_footprint -> camera_link 是否完整。若相机驱动已经发布 base 到 camera 的 TF，可关闭本工程的相机静态 TF：
 
@@ -622,7 +634,7 @@ RGB、深度和相机内参时间戳无法同步时，rgbd_sync 不会输出有�
 publish_camera_tf:=false
 ~~~
 
-### 14.5 编译失败
+### 17.5 编译失败
 
 ~~~bash
 cd ~/mini_car_ws
