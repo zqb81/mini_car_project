@@ -96,6 +96,7 @@ class FollowTargetServer(Node):
         self._last_valid_time = None
         self._active_nav_goal = None
         self._goal_running = False
+        self._goal_reserved = False
 
         self._pub_cmd = self.create_publisher(
             Twist, self.get_parameter("cmd_vel_topic").value, 10
@@ -154,8 +155,9 @@ class FollowTargetServer(Node):
 
     def _on_goal(self, goal_request):
         # 单底盘只允许一个跟随动作，避免并发 goal 共享导航句柄和伺服输出。
-        if self._goal_running:
+        if self._goal_running or self._goal_reserved:
             return GoalResponse.REJECT
+        self._goal_reserved = True
         return GoalResponse.ACCEPT
 
     def _on_cancel(self, goal_handle):
@@ -280,6 +282,7 @@ class FollowTargetServer(Node):
 
     def _execute(self, goal_handle):
         request = goal_handle.request
+        self._goal_reserved = False
         self._goal_running = True
         # 每个动作必须从当前目标重新等待观测，不能沿用上一次目标的缓存数据。
         self._latest_distance = -1.0
