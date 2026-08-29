@@ -221,9 +221,9 @@ class TargetFusionNode(Node):
         if self._pending is None:
             self.get_logger().warning("收到确认但没有待确认目标，已忽略。")
             return
-        self._send_follow(self._pending, reason="人工确认")
-        self._pending = None
-        self._pending_created_time = None
+        if self._send_follow(self._pending, reason="人工确认"):
+            self._pending = None
+            self._pending_created_time = None
 
     def _state_watchdog(self):
         """清理过期观测和待确认目标，避免搜索被陈旧状态永久阻塞。"""
@@ -247,21 +247,21 @@ class TargetFusionNode(Node):
             self.get_logger().info("待确认目标已过期，清除旧目标。")
 
     def _send_follow(self, pose, reason):
-        """下发 FollowTarget 目标，带冷却与去重。"""
+        """下发 FollowTarget 目标，带冷却与去重；返回是否已提交 goal。"""
         now = time.monotonic()
         if self._goal_active:
-            return
+            return False
         if now - self._last_sent_time < self._cooldown:
-            return
+            return False
 
         staging_pose = self._make_staging_pose(pose)
         if staging_pose is None:
             self.get_logger().warning("无法获取机器人位姿，暂不下发接近目标。")
-            return
+            return False
 
         if not self._nav_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().warning("FollowTarget 动作服务不可用。")
-            return
+            return False
 
         goal = FollowTarget.Goal()
         goal.use_staging_pose = True
@@ -278,6 +278,7 @@ class TargetFusionNode(Node):
         )
         future = self._nav_client.send_goal_async(goal)
         future.add_done_callback(self._on_goal_accepted)
+        return True
 
     def _make_staging_pose(self, target_pose):
         """沿机器人到目标的方向退让，生成不会直接压到目标的导航点。"""
