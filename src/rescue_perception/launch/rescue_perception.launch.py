@@ -84,6 +84,14 @@ def generate_launch_description():
                 description="伺服阶段时长上限（秒）",
             ),
             DeclareLaunchArgument(
+                "detection_timeout", default_value="2.0",
+                description="无检测消息多久后清空稳定计数（秒）",
+            ),
+            DeclareLaunchArgument(
+                "pending_timeout", default_value="15.0",
+                description="待确认目标保留时长（秒）",
+            ),
+            DeclareLaunchArgument(
                 "start_fusion", default_value="true",
                 description="false 时只启动检测，不启动融合决策",
             ),
@@ -132,6 +140,8 @@ def generate_launch_description():
                             "staging_distance"
                         ),
                         "servo_timeout": LaunchConfiguration("servo_timeout"),
+                        "detection_timeout": LaunchConfiguration("detection_timeout"),
+                        "pending_timeout": LaunchConfiguration("pending_timeout"),
                     }
                 ],
             ),

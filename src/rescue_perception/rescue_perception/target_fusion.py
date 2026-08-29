@@ -64,6 +64,8 @@ class TargetFusionNode(Node):
         self.declare_parameter("staging_distance", 2.0)          # 导航阶段目标点距目标距离
         self.declare_parameter("servo_timeout", 60.0)            # 伺服阶段超时
         self.declare_parameter("nav2_server_timeout", 5.0)
+        self.declare_parameter("detection_timeout", 2.0)
+        self.declare_parameter("pending_timeout", 15.0)
 
         self._auto_conf = self.get_parameter("auto_conf_threshold").value
         self._confirm_conf = self.get_parameter("confirm_conf_threshold").value
@@ -73,6 +75,8 @@ class TargetFusionNode(Node):
         self._follow_distance = self.get_parameter("follow_distance").value
         self._staging_distance = self.get_parameter("staging_distance").value
         self._servo_timeout = self.get_parameter("servo_timeout").value
+        self._detection_timeout = float(self.get_parameter("detection_timeout").value)
+        self._pending_timeout = float(self.get_parameter("pending_timeout").value)
 
         self._group = ReentrantCallbackGroup()
         self._sub_det = self.create_subscription(
@@ -108,8 +112,11 @@ class TargetFusionNode(Node):
         self._pending = None         # 待人工确认的目标（PoseStamped）
         self._goal_active = False    # 是否已有 FollowTarget 在执行
         self._last_sent_time = 0.0
+        self._last_detection_time = time.monotonic()
+        self._pending_created_time = None
         self._cooldown = 10.0        # 同一目标下发后的冷却，避免重复触发
         self._state = "idle"         # idle / pending / following
+        self.create_timer(0.5, self._state_watchdog, callback_group=self._group)
 
         self.get_logger().info(
             f"融合节点就绪：自动阈值 {self._auto_conf}，"
@@ -120,6 +127,7 @@ class TargetFusionNode(Node):
 
     def _on_detections(self, msg):
         """取置信度最高的检测结果，按分级策略处理。"""
+        self._last_detection_time = time.monotonic()
         best = None
         for det in msg.detections:
             if not det.results:
@@ -146,6 +154,7 @@ class TargetFusionNode(Node):
             self._send_follow(pose, reason=f"自动（score={score:.2f}）")
         else:
             self._pending = pose
+            self._pending_created_time = time.monotonic()
             self._pub_pending.publish(pose)
             self._set_state("pending")
             # 区分两种原因，避免日志误导排障：置信度不足 vs 自动模式关闭
@@ -214,6 +223,28 @@ class TargetFusionNode(Node):
             return
         self._send_follow(self._pending, reason="人工确认")
         self._pending = None
+        self._pending_created_time = None
+
+    def _state_watchdog(self):
+        """清理过期观测和待确认目标，避免搜索被陈旧状态永久阻塞。"""
+        now = time.monotonic()
+        if (
+            self._state != "following"
+            and self._detection_timeout > 0.0
+            and now - self._last_detection_time > self._detection_timeout
+        ):
+            self._stable_pos = None
+            self._stable_count = 0
+        if (
+            self._pending is not None
+            and self._pending_created_time is not None
+            and self._pending_timeout > 0.0
+            and now - self._pending_created_time > self._pending_timeout
+        ):
+            self._pending = None
+            self._pending_created_time = None
+            self._set_state("idle")
+            self.get_logger().info("待确认目标已过期，清除旧目标。")
 
     def _send_follow(self, pose, reason):
         """下发 FollowTarget 目标，带冷却与去重。"""
