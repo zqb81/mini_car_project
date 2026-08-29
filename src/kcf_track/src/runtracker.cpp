@@ -17,6 +17,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/image_encodings.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "sensor_msgs/msg/region_of_interest.hpp"
 
 namespace
 {
@@ -53,6 +54,9 @@ public:
     depth_subscription_ = create_subscription<sensor_msgs::msg::Image>(
       depth_topic_, rclcpp::SensorDataQoS(),
       std::bind(&KcfTrackerNode::onDepthImage, this, std::placeholders::_1));
+    roi_subscription_ = create_subscription<sensor_msgs::msg::RegionOfInterest>(
+      "/rescue/target_roi", 10,
+      std::bind(&KcfTrackerNode::onRoi, this, std::placeholders::_1));
 
     if (show_window_) {
       cv::namedWindow(kRgbWindow);
@@ -68,6 +72,17 @@ public:
   }
 
 private:
+  void onRoi(const sensor_msgs::msg::RegionOfInterest::ConstSharedPtr message)
+  {
+    // 仅接受非空框；下一帧 RGB 到达时统一裁剪并初始化，避免跨线程修改跟踪器。
+    if (message->width > 4 && message->height > 4) {
+      selected_roi_ = cv::Rect(
+        static_cast<int>(message->x_offset), static_cast<int>(message->y_offset),
+        static_cast<int>(message->width), static_cast<int>(message->height));
+      renew_roi_ = true;
+    }
+  }
+
   static void mouseCallback(int event, int x, int y, int, void * context)
   {
     static_cast<KcfTrackerNode *>(context)->handleMouse(event, x, y);
@@ -228,6 +243,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr tracking_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr rgb_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::RegionOfInterest>::SharedPtr roi_subscription_;
 };
 
 int main(int argc, char ** argv)

@@ -89,6 +89,9 @@ def generate_launch_description():
                         "target_pixel_x": 320.0,
                         "max_linear_speed": 0.3,
                         "max_angular_speed": 0.4,
+                        "distance_tolerance": 0.15,
+                        "pixel_tolerance": 35.0,
+                        "settle_count": 5,
                         "tracking_timeout": 0.5,
                         "cmd_vel_topic": LaunchConfiguration("cmd_vel_topic"),
                     }
@@ -114,6 +117,9 @@ def generate_launch_description():
                         "target_pixel_x": 320.0,
                         "max_linear_speed": 0.3,
                         "max_angular_speed": 0.4,
+                        "distance_tolerance": 0.15,
+                        "pixel_tolerance": 35.0,
+                        "settle_count": 5,
                         "tracking_timeout": 0.5,
                         # 伺服频率需显著高于 twist_mux 的 timeout 倒数，
                         # 否则仲裁器会判定跟随源失效而降级回导航

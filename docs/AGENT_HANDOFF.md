@@ -335,6 +335,7 @@ ros2 launch turn_on_wheeltec_robot slam_navigation.launch.py \
 | kcf/track | geometry_msgs/msg/Twist | 跟踪周期 | kcf_node（linear.x=距离，angular.z=像素） |
 | /follow_target | kcf_track/action/FollowTarget | 事件 | follow_target_server |
 | /rescue/target_pose | geometry_msgs/msg/PoseStamped | 检测周期 | detect_target |
+| /rescue/target_roi | sensor_msgs/msg/RegionOfInterest | 检测周期 | detect_target -> kcf_node 自动初始化跟踪 |
 | /detect_target/detections_3d | vision_msgs/msg/Detection3DArray | 检测周期 | detect_target |
 | /detect_target/debug_image | sensor_msgs/msg/Image | 检测周期 | detect_target |
 | /rescue/pending_target | geometry_msgs/msg/PoseStamped | 事件 | target_fusion（待人工确认） |

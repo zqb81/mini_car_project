@@ -72,6 +72,9 @@ class FollowTargetServer(Node):
         self.declare_parameter("target_pixel_x", 320.0)
         self.declare_parameter("max_linear_speed", 0.3)
         self.declare_parameter("max_angular_speed", 0.4)
+        self.declare_parameter("distance_tolerance", 0.15)
+        self.declare_parameter("pixel_tolerance", 35.0)
+        self.declare_parameter("settle_count", 5)
 
         # ---- 运行参数 ----
         # 超过该时长未收到有效观测即判定目标丢失并停车退出
@@ -212,6 +215,7 @@ class FollowTargetServer(Node):
         period = 1.0 / self.servo_rate
         start = time.monotonic()
         final_distance = -1.0
+        settled = 0
 
         while rclpy.ok():
             now = time.monotonic()
@@ -244,6 +248,12 @@ class FollowTargetServer(Node):
                     self._latest_distance, self._latest_pixel_x
                 )
                 final_distance = self._latest_distance
+                distance_ok = abs(final_distance - controller.target_distance) <= self.get_parameter("distance_tolerance").value
+                pixel_ok = abs(self._latest_pixel_x - self.get_parameter("target_pixel_x").value) <= self.get_parameter("pixel_tolerance").value
+                settled = settled + 1 if distance_ok and pixel_ok else 0
+                if settled >= int(self.get_parameter("settle_count").value):
+                    self._publish_stop()
+                    return ERROR_NONE, final_distance
 
             cmd = Twist()
             cmd.linear.x = linear

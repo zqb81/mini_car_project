@@ -397,6 +397,7 @@ ros2 launch rescue_perception detect_target.launch.py \
 | 话题 | 类型 | 说明 |
 | --- | --- | --- |
 | `/rescue/target_pose` | geometry_msgs/PoseStamped | map 系目标位姿（取置信度最高的目标） |
+| `/rescue/target_roi` | sensor_msgs/RegionOfInterest | 最佳检测框，自动交给 KCF 初始化跟踪 |
 | `~/detections_3d` | vision_msgs/Detection3DArray | 全部 3D 检测结果，供 RViz 显示 |
 | `~/debug_image` | sensor_msgs/Image | 画了检测框与测距的图像 |
 
@@ -430,6 +431,10 @@ OAK-D，检测在相机端完成，宿主零负担）。
 
 `detect_target` 只回答「画面里有什么、在哪」，不决定要不要过去。融合节点
 补上决策层，自动把检测结果变成 `FollowTarget` 的 `staging_pose`：
+
+检测节点同时发布 `/rescue/target_roi`，KCF 收到非空框后会在下一帧 RGB 上自动
+初始化跟踪，因此自主检测不再要求人工鼠标框选。导航 staging 点沿机器人到目标的
+方向退让，默认与目标保持 2.0 米，再由视觉伺服逼近到 `follow_distance`。
 
 ```bash
 # 完整链路：检测 + 融合决策（需 kcf_track 以 follow_mode:=fusion 启动）

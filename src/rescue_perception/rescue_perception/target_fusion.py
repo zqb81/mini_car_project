@@ -37,6 +37,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
+from tf2_ros import Buffer, TransformListener
 from vision_msgs.msg import Detection3DArray
 
 from kcf_track.action import FollowTarget
@@ -60,6 +61,7 @@ class TargetFusionNode(Node):
 
         # ---- 下发给 FollowTarget 的参数 ----
         self.declare_parameter("follow_distance", 1.2)           # 期望保持距离
+        self.declare_parameter("staging_distance", 2.0)          # 导航阶段目标点距目标距离
         self.declare_parameter("servo_timeout", 60.0)            # 伺服阶段超时
         self.declare_parameter("nav2_server_timeout", 5.0)
 
@@ -69,6 +71,7 @@ class TargetFusionNode(Node):
         self._radius = self.get_parameter("stability_radius").value
         self._auto_mode = self.get_parameter("auto_mode").value
         self._follow_distance = self.get_parameter("follow_distance").value
+        self._staging_distance = self.get_parameter("staging_distance").value
         self._servo_timeout = self.get_parameter("servo_timeout").value
 
         self._group = ReentrantCallbackGroup()
@@ -96,6 +99,8 @@ class TargetFusionNode(Node):
         self._nav_client = ActionClient(
             self, FollowTarget, "follow_target", callback_group=self._group
         )
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
         # ---- 状态 ----
         self._stable_pos = None      # 当前稳定目标的累计位置
@@ -218,13 +223,18 @@ class TargetFusionNode(Node):
         if now - self._last_sent_time < self._cooldown:
             return
 
+        staging_pose = self._make_staging_pose(pose)
+        if staging_pose is None:
+            self.get_logger().warning("无法获取机器人位姿，暂不下发接近目标。")
+            return
+
         if not self._nav_client.wait_for_server(timeout_sec=1.0):
             self.get_logger().warning("FollowTarget 动作服务不可用。")
             return
 
         goal = FollowTarget.Goal()
         goal.use_staging_pose = True
-        goal.staging_pose = pose
+        goal.staging_pose = staging_pose
         goal.target_distance = float(self._follow_distance)
         goal.servo_timeout = float(self._servo_timeout)
 
@@ -237,6 +247,31 @@ class TargetFusionNode(Node):
         )
         future = self._nav_client.send_goal_async(goal)
         future.add_done_callback(self._on_goal_accepted)
+
+    def _make_staging_pose(self, target_pose):
+        """沿机器人到目标的方向退让，生成不会直接压到目标的导航点。"""
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                target_pose.header.frame_id, "base_footprint", rclpy.time.Time()
+            )
+        except Exception as exc:
+            self.get_logger().debug(f"暂时无法查询机器人位姿：{exc}")
+            return None
+        rx = tf.transform.translation.x
+        ry = tf.transform.translation.y
+        dx = target_pose.pose.position.x - rx
+        dy = target_pose.pose.position.y - ry
+        distance = (dx * dx + dy * dy) ** 0.5
+        if distance < 1e-3:
+            return None
+        stand_off = min(float(self._staging_distance), max(0.0, distance - 0.3))
+        result = PoseStamped()
+        result.header = target_pose.header
+        result.pose.orientation.w = 1.0
+        result.pose.position.x = target_pose.pose.position.x - dx / distance * stand_off
+        result.pose.position.y = target_pose.pose.position.y - dy / distance * stand_off
+        result.pose.position.z = 0.0
+        return result
 
     def _on_goal_accepted(self, future):
         handle = future.result()

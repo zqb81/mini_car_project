@@ -38,7 +38,7 @@ from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import PointStamped, PoseStamped
 from message_filters import ApproximateTimeSynchronizer, Subscriber
 from rclpy.node import Node
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, RegionOfInterest
 from tf2_geometry_msgs import do_transform_point
 from tf2_ros import Buffer, TransformListener
 from vision_msgs.msg import (
@@ -137,6 +137,8 @@ class DetectTargetNode(Node):
         self._pub_target = self.create_publisher(
             PoseStamped, "/rescue/target_pose", 10
         )
+        # 给 KCF 提供同一帧的像素框，使自主检测可以自动接管视觉伺服。
+        self._pub_roi = self.create_publisher(RegionOfInterest, "/rescue/target_roi", 10)
         self._pub_debug = self.create_publisher(Image, "~/debug_image", 10)
 
         self._last_detect_time = 0.0
@@ -209,7 +211,7 @@ class DetectTargetNode(Node):
         detections.header.frame_id = self._target_frame
 
         debug_img = rgb.copy() if self._publish_debug else None
-        best_target = None  # 置信度最高的目标，用于发布单一目标位姿
+        best_target = None  # 置信度最高的目标，用于发布单一目标位姿和 ROI
 
         for result in results:
             boxes = result.boxes
@@ -225,7 +227,7 @@ class DetectTargetNode(Node):
 
                 score = float(box.conf[0])
                 if best_target is None or score > best_target[0]:
-                    best_target = (score, pose_map)
+                    best_target = (score, pose_map, box)
 
                 if debug_img is not None:
                     self._draw(debug_img, box, z, score)
@@ -234,6 +236,12 @@ class DetectTargetNode(Node):
             self._pub_detections.publish(detections)
             if best_target is not None:
                 self._pub_target.publish(best_target[1])
+                x1, y1, x2, y2 = best_target[2].xyxy[0].tolist()
+                self._pub_roi.publish(RegionOfInterest(
+                    x_offset=max(0, int(x1)), y_offset=max(0, int(y1)),
+                    width=max(1, int(x2 - x1)), height=max(1, int(y2 - y1)),
+                    do_rectify=False,
+                ))
 
         if debug_img is not None:
             try:

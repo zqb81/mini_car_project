@@ -76,6 +76,10 @@ def generate_launch_description():
                 description="视觉伺服阶段与目标保持的距离（米）",
             ),
             DeclareLaunchArgument(
+                "staging_distance", default_value="2.0",
+                description="导航阶段停在目标前方的距离（米）",
+            ),
+            DeclareLaunchArgument(
                 "servo_timeout", default_value="60.0",
                 description="伺服阶段时长上限（秒）",
             ),
@@ -123,6 +127,9 @@ def generate_launch_description():
                         ),
                         "follow_distance": LaunchConfiguration(
                             "follow_distance"
+                        ),
+                        "staging_distance": LaunchConfiguration(
+                            "staging_distance"
                         ),
                         "servo_timeout": LaunchConfiguration("servo_timeout"),
                     }
