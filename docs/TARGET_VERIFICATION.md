@@ -283,6 +283,10 @@ curl http://localhost:8000/api/status
 **预期**：JSON 中 `cmd_vel_topic` 为 `/cmd_vel_teleop`；`video.has_frame` 为
 `true` 且 `error` 为 `null`。
 
+若设置了 `RESCUE_API_TOKEN`，浏览器需使用 `#token=...` 片段访问；未携带令牌的
+控制 POST 请求应返回 HTTP 401。点击“急停”后应同时观察 `/cmd_vel_estop_lock` 为
+`true`、底盘速度归零；解除锁后不会自动恢复运动，必须重新发送速度。
+
 **排查**：
 - `video.error` 提示编码不支持（非 `rgb8`/`bgr8`）→ 需改用 `cv_bridge`
 - 遥控无效 → 核对 `cmd_vel_topic`：若关闭了仲裁需设 `RESCUE_CMD_VEL_TOPIC=/cmd_vel`

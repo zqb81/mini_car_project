@@ -206,7 +206,7 @@ QoS，兼容 latched 地图）与 TF；发布速度指令（默认 `/cmd_vel_tel
 | 源码运行流程（git pull + venv + uvicorn） | 待目标机验证 |
 | deploy/install.sh（可选 systemd） | 语法已检查，未实际执行 |
 | NavigateToPose action 交互、TF 位姿、激光偏移 | 待目标机验证 |
-| twist_mux 仲裁 | 未实现，接实车前必须补上 |
+| twist_mux 仲裁 | 已接入，待目标机验证（配置显式使用 `Twist`） |
 
 > 说明：由于桥接层固定依赖 rclpy，**本服务无法在开发机（Windows，无 ROS2）
 > 上做任何运行期自检**，全部运行时验证需在目标机完成。
