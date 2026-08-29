@@ -106,7 +106,7 @@ python3 -m venv rescue_console/venv
 source /opt/ros/humble/setup.bash
 source ~/mini_car_ws/install/setup.bash
 cd ~/mini_car_ws/rescue_console/server
-./../../venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000
+../venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ~~~
 
 浏览器访问 `http://<目标机IP>:8000`。停止服务：Ctrl+C。
@@ -143,7 +143,7 @@ sudo systemctl edit rescue-console     # 修改 RESCUE_LASER_YAW_OFFSET 等环�
    改回 `/cmd_vel`，否则遥控无效：
 
    ```bash
-   RESCUE_CMD_VEL_TOPIC=/cmd_vel ./../../venv/bin/python -m uvicorn app:app ...
+RESCUE_CMD_VEL_TOPIC=/cmd_vel ../venv/bin/python -m uvicorn app:app ...
    ```
 
    `/api/status` 的 `cmd_vel_topic` 字段会返回当前实际发布话题，可用于

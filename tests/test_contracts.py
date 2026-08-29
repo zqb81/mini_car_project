@@ -38,6 +38,12 @@ class ContractTests(unittest.TestCase):
         self.assertIn("RESCUE_API_TOKEN", app)
         self.assertIn('"/cmd_vel_estop_lock"', bridge)
 
+    def test_console_docs_use_the_actual_venv_path(self):
+        readme = self._read("rescue_console/README.md")
+        verification = self._read("docs/TARGET_VERIFICATION.md")
+        self.assertNotIn("./../../venv/bin/python", readme + verification)
+        self.assertIn("../venv/bin/python -m uvicorn", readme + verification)
+
 
 if __name__ == "__main__":
     unittest.main()

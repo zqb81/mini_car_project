@@ -271,7 +271,7 @@ python3 -m venv rescue_console/venv
 source /opt/ros/humble/setup.bash
 source ~/mini_car_ws/install/setup.bash
 cd ~/mini_car_ws/rescue_console/server
-./../../venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000
+../venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 浏览器打开 `http://<目标机IP>:8000`。
