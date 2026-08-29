@@ -72,6 +72,7 @@
       <div class="kv"><span>网关</span><span class="v" id="v-conn">未连接</span></div>
       <div class="kv"><span>桥接模式</span><span class="v" id="v-bridge">-</span></div>
       <div class="kv"><span>底盘使能</span><span class="v" id="v-enable">-</span></div>
+      <div class="kv"><span>软件急停</span><span class="v" id="v-estop">-</span></div>
     </div>
 
     <div class="card">
@@ -93,7 +94,7 @@
         <div class="tbtn" data-k="s">S</div>
         <div class="tbtn" data-k="e">E</div>
         <div class="tbtn" data-k="a">A</div>
-        <div class="tbtn" id="btn-stop">停</div>
+        <div class="tbtn" id="btn-stop">急停</div>
         <div class="tbtn" data-k="d">D</div>
       </div>
       <div class="hint">
@@ -106,6 +107,7 @@
       <h2>导航</h2>
       <div id="nav-state">空闲</div>
       <button class="act" id="btn-cancel">取消导航并停车</button>
+      <button class="act" id="btn-estop-release">解除软件急停锁</button>
       <div class="hint">
         点击左侧地图任意位置下发目标点，由 Nav2 规划路径并自动行驶。
         下发前请确认 slam_navigation.launch.py 已运行且 Nav2 生命周期节点
@@ -164,6 +166,9 @@ let mapGrid = null;          // Uint8Array，渲染用：-1->2(未知) 0->0 100-
 let latest = null;           // 最近一帧遥测
 let trajectory = [];         // 轨迹点（世界坐标）
 const keys = {};             // 手动按键状态
+const API_TOKEN = localStorage.getItem("rescueApiToken") ||
+  (location.hash.startsWith("#token=") ? decodeURIComponent(location.hash.slice(7)) : "");
+if (API_TOKEN && !localStorage.getItem("rescueApiToken")) localStorage.setItem("rescueApiToken", API_TOKEN);
 
 /* ---------- WebSocket ---------- */
 let ws = null, reconnectTimer = null;
@@ -181,11 +186,19 @@ function connect() {
     else if (msg.type === "map") onMap(msg);
   };
   ws.onclose = () => {
+    clearKeys();
+    postJSON("/api/cmd_vel", {vx:0, vy:0, wz:0});
     $("v-conn").textContent = "已断开，重连中…";
     $("conn-dot").classList.remove("ok");
     reconnectTimer = setTimeout(connect, 2000);
   };
   ws.onerror = () => ws.close();
+}
+
+function clearKeys() {
+  for (const k of Object.keys(keys)) keys[k] = false;
+  document.querySelectorAll(".tbtn.active").forEach(btn => btn.classList.remove("active"));
+  zeroRepeat = 0;
 }
 
 function onTelemetry(m) {
@@ -200,6 +213,9 @@ function onTelemetry(m) {
   const en = $("v-enable");
   en.textContent = m.chassis_enabled ? "使能" : "禁用";
   en.className = "v " + (m.chassis_enabled ? "" : "warn");
+  const estop = $("v-estop");
+  estop.textContent = m.estop_locked ? "已锁定" : "未锁定";
+  estop.className = "v " + (m.estop_locked ? "warn" : "");
   const batt = $("v-batt");
   if (m.battery == null) {
     batt.textContent = "-（未收到电压）";
@@ -328,7 +344,11 @@ function currentCmd() {
 }
 
 async function postJSON(url, body) {
-  try { await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}); }
+  try {
+    const headers = {"Content-Type": "application/json"};
+    if (API_TOKEN) headers.Authorization = `Bearer ${API_TOKEN}`;
+    await fetch(url, {method: "POST", headers, body: JSON.stringify(body)});
+  }
   catch (e) { /* 网络瞬断由看门狗兜底，不打断循环 */ }
 }
 
@@ -360,6 +380,10 @@ document.addEventListener("keyup", ev => {
   const k = KEYMAP[ev.key.toLowerCase()];
   if (k) keys[k] = false;
 });
+window.addEventListener("blur", () => { clearKeys(); postJSON("/api/cmd_vel", {vx:0, vy:0, wz:0}); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { clearKeys(); postJSON("/api/cmd_vel", {vx:0, vy:0, wz:0}); }
+});
 // 屏幕按钮（按住生效）
 document.querySelectorAll(".tbtn[data-k]").forEach(btn => {
   const k = btn.dataset.k;
@@ -371,9 +395,8 @@ document.querySelectorAll(".tbtn[data-k]").forEach(btn => {
 });
 $("btn-stop").addEventListener("mousedown", async ev => {
   ev.preventDefault();
-  keys.w = keys.s = keys.a = keys.d = keys.q = keys.e = false;
-  await postJSON("/api/cancel_nav", {});
-  await postJSON("/api/cmd_vel", {vx:0, vy:0, wz:0});
+  clearKeys();
+  await postJSON("/api/estop", {locked:true});
 });
 
 /* ---------- 点击地图下发导航目标 ---------- */
@@ -383,6 +406,7 @@ canvas.addEventListener("click", ev => {
   postJSON("/api/nav_goal", {x, y});
 });
 $("btn-cancel").addEventListener("click", () => postJSON("/api/cancel_nav", {}));
+$("btn-estop-release").addEventListener("click", () => postJSON("/api/estop", {locked:false}));
 
 /* ---------- 视频状态（目标机排障用） ----------
  * MJPEG 流建立连接后，即使服务端一帧都没编码出来，img 也只是空白而不报错，

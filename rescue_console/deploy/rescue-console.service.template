@@ -22,6 +22,8 @@ Environment=RESCUE_LASER_YAW_OFFSET=3.14159265
 # 遥操速度的输出话题。底盘经 twist_mux 仲裁后只接收 /cmd_vel_muxed，
 # 因此这里必须走仲裁输入通道；若关闭仲裁需改为 /cmd_vel。
 Environment=RESCUE_CMD_VEL_TOPIC=/cmd_vel_teleop
+# 可选控制接口令牌，文件中写 RESCUE_API_TOKEN=...；不把密钥写入仓库。
+EnvironmentFile=-%h/.config/rescue-console.env
 # 先 source ROS2 系统环境与工作空间，再启动 venv 内的 uvicorn；
 # venv 只装 Web 依赖，rclpy 等来自系统 ROS，两者互不污染
 ExecStart=/bin/bash -c 'source /opt/ros/humble/setup.bash && source __HOME__/mini_car_ws/install/setup.bash && exec __APP_DIR__/venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port 8000'

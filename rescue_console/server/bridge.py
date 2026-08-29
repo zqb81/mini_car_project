@@ -66,6 +66,9 @@ class BaseBridge:
     def cancel_nav(self) -> None:  # pragma: no cover
         raise NotImplementedError
 
+    def set_estop(self, locked: bool) -> None:  # pragma: no cover
+        raise NotImplementedError
+
     def video_frame(self) -> Optional[tuple]:  # pragma: no cover
         """最新一帧 JPEG，返回 (序号, 字节串)；暂无帧时返回 None。"""
         raise NotImplementedError
@@ -143,6 +146,7 @@ class RosBridge(BaseBridge):
 
         self._rclpy = rclpy
         self._Twist = Twist
+        self._Bool = Bool
         self._NavigateToPose = NavigateToPose
         self._laser_offset = float(
             os.environ.get("RESCUE_LASER_YAW_OFFSET", math.pi)
@@ -155,6 +159,7 @@ class RosBridge(BaseBridge):
         self._twist = {"vx": 0.0, "vy": 0.0, "wz": 0.0}
         self._battery: Optional[float] = None
         self._enabled = True
+        self._estop_locked = False
         self._scan = None
         self._map_flat = None
         self._map_meta = None
@@ -204,6 +209,7 @@ class RosBridge(BaseBridge):
             "RESCUE_CMD_VEL_TOPIC", "/cmd_vel_teleop"
         )
         self._pub_cmd = node.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self._pub_estop = node.create_publisher(Bool, "/cmd_vel_estop_lock", 10)
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, node)
         self._nav_client = ActionClient(node, NavigateToPose,
@@ -426,6 +432,7 @@ class RosBridge(BaseBridge):
             "battery": None if battery is None else round(battery, 2),
             "battery_low": battery is not None and battery <= _BATTERY_MIN,
             "chassis_enabled": self._enabled,
+            "estop_locked": self._estop_locked,
             "odometry": round(self._odo, 1),
             "nav_state": self._nav_state,
             "nav_goal": ({"x": self._goal[0], "y": self._goal[1]}
@@ -464,6 +471,8 @@ class RosBridge(BaseBridge):
         """手动遥控入口。非零指令优先取消 Nav2 目标（人工接管优先）。"""
         if self._closed:
             return
+        if self._estop_locked and abs(vx) + abs(vy) + abs(wz) > 1e-6:
+            return
         self._publish_cmd(vx, vy, wz)
         self._last_cmd = time.monotonic()
         self._manual = abs(vx) + abs(vy) + abs(wz) > 1e-6
@@ -472,6 +481,9 @@ class RosBridge(BaseBridge):
 
     def nav_goal(self, x: float, y: float) -> None:
         if self._closed:
+            return
+        if self._estop_locked:
+            self._nav_state = "estop_locked"
             return
         if not self._nav_client.server_is_ready():
             self._nav_state = "nav2_unavailable"
@@ -501,6 +513,17 @@ class RosBridge(BaseBridge):
         self._goal_handle = None
         self._nav_state = "idle"
         self._publish_cmd(0.0, 0.0, 0.0)
+
+    def set_estop(self, locked: bool) -> None:
+        """设置软件急停锁；解锁后不会自动恢复运动。"""
+        if self._closed:
+            return
+        self._estop_locked = bool(locked)
+        self._pub_estop.publish(self._Bool(data=self._estop_locked))
+        if self._estop_locked:
+            self.cancel_nav()
+        else:
+            self._publish_cmd(0.0, 0.0, 0.0)
 
     def close(self) -> None:
         """服务退出时清理 rclpy 资源（spin/编码线程为守护线程，随进程结束）。

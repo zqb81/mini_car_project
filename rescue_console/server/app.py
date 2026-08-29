@@ -29,11 +29,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -42,6 +43,7 @@ from bridge import BaseBridge, create_bridge
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 bridge: BaseBridge = create_bridge()
+_API_TOKEN = os.environ.get("RESCUE_API_TOKEN", "").strip()
 
 # 连接管理：所有 WebSocket 客户端共享同一份广播
 _clients: set[WebSocket] = set()
@@ -73,6 +75,18 @@ class CmdVelBody(BaseModel):
 class NavGoalBody(BaseModel):
     x: float = Field(ge=-100.0, le=100.0)
     y: float = Field(ge=-100.0, le=100.0)
+
+
+class EstopBody(BaseModel):
+    """软件急停锁状态；解锁后仍需重新发送速度才会运动。"""
+
+    locked: bool = True
+
+
+def _check_api_token(authorization: str | None) -> None:
+    """配置令牌时保护所有会改变车辆状态的 HTTP 接口。"""
+    if _API_TOKEN and authorization != f"Bearer {_API_TOKEN}":
+        raise HTTPException(status_code=401, detail="需要有效的 Bearer 令牌")
 
 
 async def _tick_loop() -> None:
@@ -170,21 +184,32 @@ async def video_stream():
 
 
 @app.post("/api/cmd_vel")
-async def cmd_vel(body: CmdVelBody) -> dict:
+async def cmd_vel(body: CmdVelBody, authorization: str | None = Header(default=None)) -> dict:
+    _check_api_token(authorization)
     bridge.cmd_vel(body.vx, body.vy, body.wz)
     return {"ok": True}
 
 
 @app.post("/api/nav_goal")
-async def nav_goal(body: NavGoalBody) -> dict:
+async def nav_goal(body: NavGoalBody, authorization: str | None = Header(default=None)) -> dict:
+    _check_api_token(authorization)
     bridge.nav_goal(body.x, body.y)
     return {"ok": True}
 
 
 @app.post("/api/cancel_nav")
-async def cancel_nav() -> dict:
+async def cancel_nav(authorization: str | None = Header(default=None)) -> dict:
+    _check_api_token(authorization)
     bridge.cancel_nav()
     return {"ok": True}
+
+
+@app.post("/api/estop")
+async def estop(body: EstopBody, authorization: str | None = Header(default=None)) -> dict:
+    """锁定或解锁软件急停；锁定时立即取消网关导航并发送零速。"""
+    _check_api_token(authorization)
+    bridge.set_estop(body.locked)
+    return {"ok": True, "locked": body.locked}
 
 
 @app.websocket("/ws/telemetry")

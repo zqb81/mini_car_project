@@ -60,6 +60,7 @@ cd ~/mini_car_ws/rescue_console/server
 | POST | /api/cmd_vel | {vx, vy, wz} | 米/秒、弧度/秒；0.5s 无新指令自动停车 |
 | POST | /api/nav_goal | {x, y} | 地图坐标（米） |
 | POST | /api/cancel_nav | - | 取消导航并停车 |
+| POST | /api/estop | {locked:true/false} | 锁定或解除软件急停；解锁不会自动恢复运动 |
 | GET | /video/stream | - | MJPEG 彩色画面（`multipart/x-mixed-replace`），前端 `<img src>` 直接播放 |
 
 `/api/status` 额外返回 `video` 字段（`topic` / `fps` / `encoding` / `has_frame` /
@@ -127,6 +128,11 @@ journalctl -u rescue-console -f        # 日志
 sudo systemctl edit rescue-console     # 修改 RESCUE_LASER_YAW_OFFSET 等环境变量
 ~~~
 
+生产或跨网段使用前，建议创建 `~/.config/rescue-console.env` 并写入
+`RESCUE_API_TOKEN=一段随机长令牌`，然后重启服务。浏览器首次访问时可使用
+`http://<目标机IP>:8000/#token=一段随机长令牌`，令牌会保存到浏览器本地存储；
+不要把令牌放进普通查询参数或提交到仓库。
+
 ### 5.3 运行前提（接实车前逐条确认）
 
 1. `slam_navigation.launch.py` 已在运行（底盘 + 雷达 + 相机 + RTAB-Map + Nav2）。
@@ -178,6 +184,11 @@ QoS，兼容 latched 地图）与 TF；发布速度指令（默认 `/cmd_vel_tel
   导航 10）；关闭仲裁时不得让任意两路同时下发。`twist_mux` 只是软件层仲裁，
   不能替代硬件急停。
 - 服务绑定 0.0.0.0 且无鉴权，仅限可信局域网使用；跨网段暴露需自加反向代理与认证。
+- 可通过 `RESCUE_API_TOKEN` 启用控制接口 Bearer 鉴权；浏览器访问时把令牌放入 URL 片段
+  `#token=...`，页面会保存到本地存储。未配置令牌仅适合隔离的开发网络。
+- 「急停」按钮会锁定 `/cmd_vel_estop_lock`、取消网关导航并发送零速；须点击「解除软件急停锁」
+  后重新发送速度。该锁仍是软件保护，不能替代硬件急停。
+- 浏览器窗口失焦、页面隐藏或 WebSocket 断开时会清空遥控按键并发送零速。
 - 实时画面仅支持 rgb8 / bgr8 未压缩编码（Pillow 解码）。若相机发布 mjpeg
   等压缩格式，页面会显示明确的编码错误，此时改用 cv_bridge：
   `apt install ros-humble-cv-bridge`（需同步改造 bridge.py 的 _encode_jpeg）。
