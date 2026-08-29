@@ -297,6 +297,7 @@ curl http://localhost:8000/api/status
 
 ```bash
 ros2 launch kcf_track kcf_tracking.launch.py \
+  start_base:=false \
   follow_mode:=fusion \
   rgb_topic:=/camera/color/image_raw \
   depth_topic:=/camera/depth/image_raw
