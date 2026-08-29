@@ -100,8 +100,7 @@ mini_car/
 │   │   ├── launch/              ROS2 入口（*.launch.py）
 │   │   ├── src/                 wheeltec_robot.cpp 串口桥接节点
 │   │   ├── urdf/                车型模型
-│   │   ├── map/                 示例地图（WHEELTEC.pgm / .yaml）
-│   │   └── scripts/             wheeltec_udev.sh、send_mark.py
+│   │   ├── scripts/             wheeltec_udev.sh
 │   ├── astra_camera/            Astra Pro 驱动与随车 OpenNI2 二进制库
 │   ├── astra_camera_msgs/       Astra Pro 自定义消息与服务
 │   ├── rplidar_ros/             SLAMTEC RPLIDAR ROS2 驱动
@@ -118,6 +117,9 @@ mini_car/
 │       │                        search_coordinator.py（探索与接近的编排）
 │       ├── config/              explore_params.yaml（frontier 探索参数）
 │       └── launch/              detect_target / rescue_perception / rescue_search
+├── ros1_rsc/                    ROS1 旧版迁移参考资料（不参与 ROS2 构建）
+│   ├── turn_on_wheeltec_robot/  旧 XML launch、参数、示例地图、send_mark.py
+│   └── kcf_track/               旧 KCF XML launch 与图像缩放脚本
 ├── F103VET6_Mini小车_STM32源码_2022.01.06(霍尔编码器)/
 │   ├── USER/                    Keil 工程与程序入口
 │   ├── BALANCE/                 运动学、速度 PI、车型参数
@@ -142,7 +144,7 @@ mini_car/
 | `rplidar_a1.launch.py` | 单独启动 RPLIDAR A1M8 |
 | `astra_s.launch.py` | Astra S 相机入口 |
 
-同目录下的 `*.launch`（如 `mapping.launch`、`navigation.launch`、`turn_on_wheeltec_robot.launch`）是旧 ROS1 XML launch，仅作迁移对照保留；`CMakeLists.txt` 只安装 `*.launch.py`，它们不会进入 ROS2 安装空间。`send_mark.py`、`imageResize.py` 同理不参与 ROS2 安装。
+旧 ROS1 XML launch、ROS1 参数、示例地图及脚本已统一移至仓库根目录 `ros1_rsc/`，仅作迁移对照；它们不属于 ROS2 `src/`，不会被 colcon 构建或安装。ROS2 包的 `launch/` 目录只保留 `*.launch.py`。
 
 ## 4. 安装与构建
 

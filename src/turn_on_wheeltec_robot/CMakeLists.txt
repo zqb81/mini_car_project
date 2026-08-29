@@ -32,11 +32,11 @@ install(TARGETS wheeltec_robot_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY config map urdf
+install(DIRECTORY config urdf
   DESTINATION share/${PROJECT_NAME}
 )
 
-# 仅安装 ROS2 Python launch，旧 ROS1 XML 文件继续留在源码中供迁移对照。
+# 仅安装 ROS2 Python launch；ROS1 XML 资产已移至仓库根目录 ros1_rsc/，不参与安装。
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
   FILES_MATCHING PATTERN "*.launch.py"

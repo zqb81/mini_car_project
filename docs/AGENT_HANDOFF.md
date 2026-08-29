@@ -74,6 +74,7 @@ src/astra_camera/               内置第三方 Astra 驱动
 src/astra_camera_msgs/          内置第三方 Astra 消息
 src/rplidar_ros/                内置第三方雷达驱动
 rescue_console/                 Web 救援控制台（FastAPI 网关 + 浏览器页面）
+ros1_rsc/                       ROS1 旧版迁移参考资料，不参与 ROS2 构建
 docs/                           交接文档、第三方说明、目标机验证清单
 ~~~
 

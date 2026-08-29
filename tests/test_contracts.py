@@ -45,6 +45,18 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("./../../venv/bin/python", readme + verification)
         self.assertIn("../venv/bin/python -m uvicorn", readme + verification)
 
+    def test_ros1_assets_are_outside_colcon_source_tree(self):
+        ros2_launches = list((ROOT / "src").glob("*/launch/*.launch"))
+        ros2_legacy_dirs = [
+            ROOT / "src" / "turn_on_wheeltec_robot" / "map",
+            ROOT / "src" / "turn_on_wheeltec_robot" / "params_nav_common",
+            ROOT / "src" / "turn_on_wheeltec_robot" / "params_costmap_common",
+            ROOT / "src" / "turn_on_wheeltec_robot" / "params_costmap_car",
+        ]
+        self.assertEqual(ros2_launches, [])
+        self.assertTrue(all(not path.exists() for path in ros2_legacy_dirs))
+        self.assertTrue((ROOT / "ros1_rsc" / "README.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
