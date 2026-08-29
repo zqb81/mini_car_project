@@ -105,8 +105,8 @@ class RosBridge(BaseBridge):
     变量 RESCUE_LASER_YAW_OFFSET（弧度）覆盖。
 
     已知限制（部署说明中同步标注）：
-      - 本网关、Nav2、KCF 都可能发布 /cmd_vel，无 twist_mux 仲裁，
-        手动遥控与自动导航不得同时进行（手动输入会先取消 Nav2 目标）。
+      - 本网关、Nav2、KCF 都可能发布速度，默认经 twist_mux 分流；手动遥控
+        与自动导航仍应遵循人工接管规则（手动输入会先取消网关的 Nav2 目标）。
       - /map 的 RLE 编码在 Python 中逐格进行，RTAB-Map 大地图（>1M 格）
         单帧编码耗时约 0.1~0.3 秒，会短暂阻塞事件循环，属可接受范围。
       - 视频仅支持 rgb8 / bgr8 未压缩编码（用 Pillow 解码）；若相机话题是

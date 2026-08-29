@@ -229,8 +229,9 @@ src/astra_camera_msgs
 | Web 遥操 | /cmd_vel_teleop | 100 |
 | 急停锁（Bool 置 true 屏蔽全部） | /cmd_vel_estop_lock | 255 |
 
-每路 0.5s 超时，失效自动降级；全部失效输出零速度。**急停锁只是软件层屏蔽，
-不能替代硬件急停**。依赖：`sudo apt install ros-humble-twist-mux`。
+每路 0.5s 超时，失效自动降级；全部失效后由底盘桥接看门狗发送零速度。软件急停 API
+会同时发布锁、取消网关导航并发送零速度。**急停锁只是软件层屏蔽，不能替代硬件急停**。
+依赖：`sudo apt install ros-humble-twist-mux`。
 
 Nav2 零改动集成：Humble 的 velocity_smoother 输出就是 /cmd_vel，仲裁器直接
 订阅它；底盘硬编码的 "cmd_vel" 由 base.launch.py 的 `cmd_vel_topic` 参数
