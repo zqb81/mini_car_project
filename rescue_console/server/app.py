@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -85,7 +86,9 @@ class EstopBody(BaseModel):
 
 def _check_api_token(authorization: str | None) -> None:
     """配置令牌时保护所有会改变车辆状态的 HTTP 接口。"""
-    if _API_TOKEN and authorization != f"Bearer {_API_TOKEN}":
+    if _API_TOKEN and not secrets.compare_digest(
+        authorization or "", f"Bearer {_API_TOKEN}"
+    ):
         raise HTTPException(status_code=401, detail="需要有效的 Bearer 令牌")
 
 

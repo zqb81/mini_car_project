@@ -36,6 +36,7 @@ class ContractTests(unittest.TestCase):
         bridge = self._read("rescue_console/server/bridge.py")
         self.assertIn('@app.post("/api/estop")', app)
         self.assertIn("RESCUE_API_TOKEN", app)
+        self.assertIn("compare_digest", app)
         self.assertIn('"/cmd_vel_estop_lock"', bridge)
 
     def test_console_docs_use_the_actual_venv_path(self):
