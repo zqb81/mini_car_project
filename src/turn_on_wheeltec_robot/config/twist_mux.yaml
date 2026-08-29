@@ -20,6 +20,9 @@
 #   Web     /cmd_vel_teleop ┘
 twist_mux:
   ros__parameters:
+    # 项目所有速度源均为 geometry_msgs/msg/Twist；Humble 新版默认是
+    # TwistStamped，必须显式关闭，否则订阅类型与发布方不匹配。
+    use_stamped: false
     topics:
       # 导航：优先级最低。人工接管与视觉跟随都可以随时压过它。
       # 话题取 Nav2 的实际输出，无需改动 Nav2 配置。
