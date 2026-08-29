@@ -28,7 +28,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -53,18 +53,12 @@ def generate_launch_description():
                 description="目标结束后延迟多少秒恢复搜索",
             ),
             DeclareLaunchArgument(
+                "fusion_state_timeout", default_value="3.0",
+                description="融合状态超过该秒数未更新则按无目标处理",
+            ),
+            DeclareLaunchArgument(
                 "start_explore", default_value="true",
                 description="是否启动 explore_lite；false 时只启动编排节点",
-            ),
-
-            # 探索：只负责找 frontier 并调用 Nav2，从不发布速度指令
-            Node(
-                package="explore_lite",
-                executable="explore",
-                name="explore",
-                output="screen",
-                condition=IfCondition(LaunchConfiguration("start_explore")),
-                parameters=[LaunchConfiguration("explore_params")],
             ),
 
             # 编排：根据融合状态决定探索的开与关
@@ -77,8 +71,23 @@ def generate_launch_description():
                     {
                         "auto_start": LaunchConfiguration("auto_start"),
                         "resume_delay": LaunchConfiguration("resume_delay"),
+                        "fusion_state_timeout": LaunchConfiguration("fusion_state_timeout"),
                     }
                 ],
+            ),
+
+            # explore_lite 构造时会立即规划；延迟启动确保协调器先发出一次
+            # 初始 false/true，避免默认关闭时出现短暂自主运动窗口。
+            TimerAction(
+                period=2.0,
+                actions=[Node(
+                    package="explore_lite",
+                    executable="explore",
+                    name="explore",
+                    output="screen",
+                    condition=IfCondition(LaunchConfiguration("start_explore")),
+                    parameters=[LaunchConfiguration("explore_params")],
+                )],
             ),
         ]
     )

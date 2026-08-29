@@ -57,12 +57,15 @@ class SearchCoordinatorNode(Node):
         # 也避免目标在丢失边缘反复启停导致抖动。
         self.declare_parameter("resume_delay", 5.0)
         self.declare_parameter("enable", True)
+        self.declare_parameter("fusion_state_timeout", 3.0)
 
         self._resume_delay = self.get_parameter("resume_delay").value
         self._enabled = self.get_parameter("enable").value
+        self._fusion_timeout = float(self.get_parameter("fusion_state_timeout").value)
 
         self._state = self.STATE_IDLE
         self._fusion_state = "idle"     # 来自 target_fusion 的最新状态
+        self._last_fusion_time = time.monotonic()
         self._last_idle_time = None     # fusion 最近一次回到 idle 的时刻
         self._last_published = None     # 最近一次下发给探索的指令，避免重复发
 
@@ -109,6 +112,7 @@ class SearchCoordinatorNode(Node):
         if new_state == self._fusion_state:
             return
         self._fusion_state = new_state
+        self._last_fusion_time = time.monotonic()
         if new_state == "idle":
             # 记录回到空闲的时刻，供 resume_delay 计算
             self._last_idle_time = time.monotonic()
@@ -132,7 +136,11 @@ class SearchCoordinatorNode(Node):
 
     def _tick(self):
         """按当前状态与融合状态推进，并下发探索开关指令。"""
-        has_target = self._fusion_state in ("pending", "following")
+        fusion_fresh = (
+            self._fusion_timeout <= 0.0
+            or time.monotonic() - self._last_fusion_time <= self._fusion_timeout
+        )
+        has_target = fusion_fresh and self._fusion_state in ("pending", "following")
 
         if self._state == self.STATE_IDLE:
             self._publish_resume(False)

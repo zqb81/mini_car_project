@@ -262,6 +262,7 @@ remap 解决，未改 C++。
 （检测+融合）、`rescue_search.launch.py`（探索+编排）。
 
 `explore_lite`（m-explore-ros2）**不内置仓库**，需按 README 第 5.8 节安装。
+搜索入口先启动编排节点，再延迟 2 秒创建 explore_lite，确保默认暂停状态先到达；融合状态超过 3 秒未更新时按无目标处理。`min_frontier_size` 单位为米，默认 0.5。
 
 ### 5.6 rescue_console（Web 救援控制台）
 

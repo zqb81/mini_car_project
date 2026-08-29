@@ -480,6 +480,8 @@ ros2 topic pub --once /rescue/confirm std_msgs/msg/Bool "{data: true}"
 
 #### 安装 explore_lite（本仓库不内置）
 
+搜索入口先启动编排节点，再延迟 2 秒创建 explore_lite，确保默认暂停状态先到达；融合状态超过 3 秒未更新时按无目标处理。`min_frontier_size` 单位为米，默认 0.5。
+
 ```bash
 cd ~/mini_car_ws/src
 git clone https://github.com/robo-friends/m-explore-ros2.git

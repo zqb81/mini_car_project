@@ -13,8 +13,8 @@ explore:
     robot_base_frame: base_footprint
 
     # frontier 相关阈值
-    # 小于该尺寸的 frontier 视为噪声，不值得专程前往（单位：栅格数）
-    min_frontier_size: 8
+    # 小于该尺寸的 frontier 视为噪声；上游按世界坐标米数比较，不是栅格数。
+    min_frontier_size: 0.5
     # 代价地图中判定为「未知」的取值
     unknown_cost_value: 255
 
