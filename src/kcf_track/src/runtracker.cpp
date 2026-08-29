@@ -74,8 +74,9 @@ public:
 private:
   void onRoi(const sensor_msgs::msg::RegionOfInterest::ConstSharedPtr message)
   {
-    // 仅接受非空框；下一帧 RGB 到达时统一裁剪并初始化，避免跨线程修改跟踪器。
-    if (message->width > 4 && message->height > 4) {
+    // 跟踪期间忽略检测器的重复框，避免每个 YOLO 检测周期都重置 KCF。
+    // 目标丢失后 tracking_active_ 会变为 false，下一次有效检测再重新接管。
+    if (!tracking_active_ && message->width > 4 && message->height > 4) {
       selected_roi_ = cv::Rect(
         static_cast<int>(message->x_offset), static_cast<int>(message->y_offset),
         static_cast<int>(message->width), static_cast<int>(message->height));
