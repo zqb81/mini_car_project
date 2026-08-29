@@ -94,6 +94,8 @@ class FollowTargetServer(Node):
         self._latest_distance = -1.0
         self._latest_pixel_x = -1.0
         self._last_valid_time = None
+        self._active_nav_goal = None
+        self._goal_running = False
 
         self._pub_cmd = self.create_publisher(
             Twist, self.get_parameter("cmd_vel_topic").value, 10
@@ -151,7 +153,9 @@ class FollowTargetServer(Node):
         self._pub_cmd.publish(Twist())
 
     def _on_goal(self, goal_request):
-        # 新目标直接接受：抢占语义下由执行回调负责停止旧目标的运动
+        # 单底盘只允许一个跟随动作，避免并发 goal 共享导航句柄和伺服输出。
+        if self._goal_running:
+            return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
     def _on_cancel(self, goal_handle):
@@ -187,6 +191,7 @@ class FollowTargetServer(Node):
         if nav_goal_handle is None or not nav_goal_handle.accepted:
             self.get_logger().error("Nav2 拒绝了 staging 目标。")
             return ERROR_STAGING_FAILED
+        self._active_nav_goal = nav_goal_handle
 
         result_future = nav_goal_handle.get_result_async()
         while not result_future.done():
@@ -197,6 +202,7 @@ class FollowTargetServer(Node):
             time.sleep(0.05)
 
         status = result_future.result().status
+        self._active_nav_goal = None
         if status != 4:  # GoalStatus.SUCCEEDED == 4
             self.get_logger().warning(f"Nav2 staging 未完成，状态码 {status}。")
             return ERROR_STAGING_FAILED
@@ -274,6 +280,7 @@ class FollowTargetServer(Node):
 
     def _execute(self, goal_handle):
         request = goal_handle.request
+        self._goal_running = True
         # 每个动作必须从当前目标重新等待观测，不能沿用上一次目标的缓存数据。
         self._latest_distance = -1.0
         self._latest_pixel_x = -1.0
@@ -303,6 +310,9 @@ class FollowTargetServer(Node):
             )
 
         # 无论成功失败都确保停车，避免动作结束时底盘仍在运动
+        if self._active_nav_goal is not None:
+            self._active_nav_goal.cancel_goal_async()
+            self._active_nav_goal = None
         self._publish_stop()
 
         result = FollowTarget.Result()
@@ -319,6 +329,7 @@ class FollowTargetServer(Node):
             goal_handle.succeed()
         else:
             goal_handle.abort()
+        self._goal_running = False
         return result
 
 
@@ -333,6 +344,9 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        if node._active_nav_goal is not None:
+            node._active_nav_goal.cancel_goal_async()
+            node._active_nav_goal = None
         node._publish_stop()
         node.destroy_node()
         rclpy.shutdown()
