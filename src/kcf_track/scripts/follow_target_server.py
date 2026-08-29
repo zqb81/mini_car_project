@@ -274,6 +274,10 @@ class FollowTargetServer(Node):
 
     def _execute(self, goal_handle):
         request = goal_handle.request
+        # 每个动作必须从当前目标重新等待观测，不能沿用上一次目标的缓存数据。
+        self._latest_distance = -1.0
+        self._latest_pixel_x = -1.0
+        self._last_valid_time = None
         feedback = FollowTarget.Feedback()
         feedback.phase = PHASE_PENDING
         feedback.current_distance = -1.0
@@ -311,8 +315,10 @@ class FollowTargetServer(Node):
 
         if goal_handle.is_cancel_requested:
             goal_handle.canceled()
-        else:
+        elif error_code == ERROR_NONE:
             goal_handle.succeed()
+        else:
+            goal_handle.abort()
         return result
 
 

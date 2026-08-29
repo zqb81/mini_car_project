@@ -33,6 +33,7 @@ bool success
 # 3 TARGET_LOST       伺服期间丢失目标（超过 tracking_timeout 未收到有效观测）
 # 4 TIMEOUT           达到 servo_timeout
 # 5 CANCELED          被新目标抢占或主动取消
+# 只有误差连续稳定满足容差时才返回 success=true；超时、丢失或导航失败均 abort。
 int16 error_code
 
 # 结束时的目标距离（米）。未获得过有效观测时为 -1。

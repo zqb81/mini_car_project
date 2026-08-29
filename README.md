@@ -904,6 +904,10 @@ git push origin v2.0.0-ros2
 
 ## 18. 当前限制
 
+仓库提供 `python -m unittest discover -s tests -v` 的纯逻辑回归测试，覆盖 KCF 控制律和
+控制台地图 RLE；涉及 ROS2、相机、串口和实车运动的测试仍必须在 Ubuntu 22.04/Humble
+目标机按分层清单执行。
+
 - 开发机（Windows）无 ROS2 Humble，只能做静态语法与结构验证；`colcon build` 与实车行为必须在 Ubuntu 22.04 / Humble 上验证。
 - Web 控制台桥接层固定依赖 `rclpy`，无法在无 ROS2 环境运行期自检，全部运行时验证需在目标机完成。
 - `twist_mux` 仲裁已实装但**尚未在目标机验证**（需先 `apt install ros-humble-twist-mux`）。
